@@ -5,6 +5,7 @@
   "description": "Large-map capture to Discord/clipboard, plus a multi-table MAP COMPILE mode that stitches every cartography table you visit into a single high-res PNG. Server-synced settings, per-pin distance/bearing labels, clean shots with all UI overlays hidden.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2333",
-    "ValheimModding-JsonDotNET-4.5.2"
+    "ValheimModding-JsonDotNET-13.0.4",
+    "ZenDragon-ZenMap-1.5.1"
   ]
 }
