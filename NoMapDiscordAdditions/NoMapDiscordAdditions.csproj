@@ -1,0 +1,122 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net481</TargetFramework>
+    <AssemblyName>NoMapDiscordAdditions</AssemblyName>
+    <RootNamespace>NoMapDiscordAdditions</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ValheimDir>E:\ValheimMods\Valheim</ValheimDir>
+    <ValheimManagedDir>$(ValheimDir)\valheim_Data\Managed</ValheimManagedDir>
+    <ValheimPublicizedDir>$(ValheimManagedDir)\publicized_assemblies</ValheimPublicizedDir>
+    <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
+    <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
+    <TSPluginsDir>E:\ValheimMods\ValheimMods\NoMapDiscordAdditions\Thunderstore\plugins</TSPluginsDir>
+  </PropertyGroup>
+
+  <Target Name="CopyToProfilePlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
+    <MakeDir Directories="$(ProfilePluginsDir)" Condition="!Exists('$(ProfilePluginsDir)')" />
+    <ItemGroup>
+      <_DeployFiles Include="$(TargetPath)" />
+      <_DeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DeployFiles)"
+          DestinationFolder="$(ProfilePluginsDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ProfilePluginsDir)" />
+  </Target>
+
+  <Target Name="CopyToThunderstorePlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <MakeDir Directories="$(TSPluginsDir)" Condition="!Exists('$(TSPluginsDir)')" />
+    <ItemGroup>
+      <_TSDeployFiles Include="$(TargetPath)" />
+      <_TSDeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_TSDeployFiles)"
+          DestinationFolder="$(TSPluginsDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_TSDeployFiles->'%(Filename)%(Extension)', ', ') -> $(TSPluginsDir)" />
+  </Target>
+
+  <!-- System.Drawing for PNG decode + DIB pixel extraction (clipboard) -->
+  <ItemGroup>
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <!-- BepInEx -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExDir)\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExDir)\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Valheim (publicized: every type/member is public, so we don't need reflection
+       hacks to reach internals from patches). The publicizer outputs files suffixed
+       with _publicized but keeps the same assembly/identity name, so Aliases and
+       runtime lookups still match the vanilla DLLs that BepInEx loads. -->
+  <ItemGroup>
+    <Reference Include="assembly_valheim">
+      <HintPath>$(ValheimPublicizedDir)\assembly_valheim_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="assembly_guiutils">
+      <HintPath>$(ValheimPublicizedDir)\assembly_guiutils_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="assembly_utils">
+      <HintPath>$(ValheimPublicizedDir)\assembly_utils_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Unity -->
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ScreenCaptureModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.ScreenCaptureModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ValheimManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

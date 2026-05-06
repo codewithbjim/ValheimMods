@@ -1,0 +1,9 @@
+{
+  "name": "NoMapDiscordAdditions",
+  "version_number": "1.0.3",
+  "website_url": "https://github.com/VirtualBjorn/ValheimMods",
+  "description": "Large-map capture to Discord (webhook) or clipboard. Per-pin distance/bearing labels, server-synced settings, clean shots with all UI overlays hidden.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2333"
+  ]
+}
