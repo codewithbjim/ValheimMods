@@ -30,7 +30,7 @@ namespace NoMapDiscordAdditions
         {
             ActivePos = worldPos;
             ActiveSource = Source.CartographyTable;
-            Debug.Log($"[NoMapDiscordAdditions] SpawnDirection: active TABLE at ({worldPos.x:F1}, {worldPos.z:F1}).");
+            ModLog.Info($"[NoMapDiscordAdditions] SpawnDirection: active TABLE at ({worldPos.x:F1}, {worldPos.z:F1}).");
         }
 
         // Portable map item (ZenMap parchment etc.). Only sets the source if it's
@@ -40,13 +40,13 @@ namespace NoMapDiscordAdditions
             if (ActiveSource == Source.CartographyTable) return;
             ActivePos = worldPos;
             ActiveSource = Source.MapItem;
-            Debug.Log($"[NoMapDiscordAdditions] SpawnDirection: active ITEM at ({worldPos.x:F1}, {worldPos.z:F1}).");
+            ModLog.Info($"[NoMapDiscordAdditions] SpawnDirection: active ITEM at ({worldPos.x:F1}, {worldPos.z:F1}).");
         }
 
         public static void Clear()
         {
             if (ActiveSource != Source.None)
-                Debug.Log("[NoMapDiscordAdditions] SpawnDirection: cleared.");
+                ModLog.Info("[NoMapDiscordAdditions] SpawnDirection: cleared.");
             ActivePos = null;
             ActiveSource = Source.None;
         }
@@ -68,8 +68,7 @@ namespace NoMapDiscordAdditions
             if (!ModHelpers.EffectiveConfig.EnableCartographyTableLabels) return null;
 
             if (ActiveSource == Source.MapItem &&
-                Plugin.SpawnLabelIncludeMapItemSources != null &&
-                !Plugin.SpawnLabelIncludeMapItemSources.Value)
+                !ModHelpers.EffectiveConfig.SpawnLabelIncludeMapItemSources)
                 return null;
 
             Vector3 pos;
@@ -110,8 +109,7 @@ namespace NoMapDiscordAdditions
             int bearing = Mathf.RoundToInt(angle) % 360;
             string dirWithBearing = $"{dir} ({bearing}°)";
 
-            bool includeDist = Plugin.SpawnLabelIncludeDistance == null ||
-                               Plugin.SpawnLabelIncludeDistance.Value;
+            bool includeDist = ModHelpers.EffectiveConfig.SpawnLabelIncludeDistance;
             return includeDist
                 ? $"{Mathf.RoundToInt(dist)}m {dirWithBearing}"
                 : dirWithBearing;

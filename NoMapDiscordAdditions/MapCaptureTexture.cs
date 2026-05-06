@@ -14,9 +14,13 @@ namespace NoMapDiscordAdditions
     /// </summary>
     public static class MapCaptureTexture
     {
-        // ── Output settings ─────────────────────────────────────────────────
-        private const int OutputWidth = 1920;
-        private const int OutputHeight = 1080;
+        // ── Default output settings ─────────────────────────────────────────
+        // The parameterless CaptureMap() and per-tile compile capture both
+        // use these. CaptureMap(int, int) overrides them for callers (e.g.
+        // CTRL+COPY going to 4K) — every internal blit references the runtime
+        // values, not these constants.
+        public const int OutputWidth = 1920;
+        public const int OutputHeight = 1080;
 
         // Per-capture atlas cache so each unique sprite atlas only pays one
         // GetPixels32() (potentially MBs of data) regardless of how many pins
@@ -30,15 +34,30 @@ namespace NoMapDiscordAdditions
         // ═══════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Captures the visible large map without the cloud overlay.
-        /// Synchronous — does not require yielding to end-of-frame.
+        /// Captures the visible large map without the cloud overlay at the
+        /// default 1920×1080 output. Synchronous — does not require yielding
+        /// to end-of-frame.
         /// </summary>
-        public static byte[] CaptureMap()
+        public static byte[] CaptureMap() => CaptureMap(OutputWidth, OutputHeight);
+
+        /// <summary>
+        /// Captures the visible large map at a custom output resolution.
+        /// The shader runs at <paramref name="outputWidth"/> × <paramref name="outputHeight"/>
+        /// fragments and pin sprites are rasterized in CPU at the same scale,
+        /// so output is sharp regardless of zoom or input map size.
+        /// </summary>
+        public static byte[] CaptureMap(int outputWidth, int outputHeight)
         {
+            if (outputWidth < 64 || outputHeight < 64)
+            {
+                ModLog.Error($"[NoMapDiscordAdditions] CaptureMap: invalid size {outputWidth}x{outputHeight}.");
+                return null;
+            }
+
             var minimap = Minimap.instance;
             if (minimap == null || minimap.m_mode != Minimap.MapMode.Large)
             {
-                Debug.LogError("[NoMapDiscordAdditions] Large map not active.");
+                ModLog.Error("[NoMapDiscordAdditions] Large map not active.");
                 return null;
             }
 
@@ -48,7 +67,7 @@ namespace NoMapDiscordAdditions
 
             if (mapTex == null || mapImage == null)
             {
-                Debug.LogError("[NoMapDiscordAdditions] Required Minimap fields not available.");
+                ModLog.Error("[NoMapDiscordAdditions] Required Minimap fields not available.");
                 return null;
             }
 
@@ -69,12 +88,12 @@ namespace NoMapDiscordAdditions
             float mapH = mapMaxY - mapMinY;
             if (mapW <= 0f || mapH <= 0f)
             {
-                Debug.LogError("[NoMapDiscordAdditions] Map RectTransform has zero size.");
+                ModLog.Error("[NoMapDiscordAdditions] Map RectTransform has zero size.");
                 return null;
             }
 
             // ── GPU pass: map base on a single RT ─────────────────────────────
-            var cropRT = RenderTexture.GetTemporary(OutputWidth, OutputHeight, 0,
+            var cropRT = RenderTexture.GetTemporary(outputWidth, outputHeight, 0,
                 RenderTextureFormat.ARGB32);
             Color32[] output;
             try
@@ -89,7 +108,7 @@ namespace NoMapDiscordAdditions
 
             if (output == null)
             {
-                Debug.LogError("[NoMapDiscordAdditions] GPU pass failed.");
+                ModLog.Error("[NoMapDiscordAdditions] GPU pass failed.");
                 return null;
             }
 
@@ -97,10 +116,10 @@ namespace NoMapDiscordAdditions
             try
             {
                 if (pinRoot != null)
-                    BlitUIChildren(output, mapMinX, mapMinY, mapW, mapH, pinRoot);
+                    BlitUIChildren(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, pinRoot);
 
-                BlitMarker(minimap.m_largeMarker, output, mapMinX, mapMinY, mapW, mapH);
-                BlitMarker(minimap.m_largeShipMarker, output, mapMinX, mapMinY, mapW, mapH);
+                BlitMarker(minimap.m_largeMarker, output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH);
+                BlitMarker(minimap.m_largeShipMarker, output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH);
 
                 // Spawn-direction text now lives in the Discord message
                 // ({spawnDir} placeholder) and on the in-game per-pin labels;
@@ -108,7 +127,7 @@ namespace NoMapDiscordAdditions
                 // ugly bitmap-looking overlay, so this path is intentionally
                 // omitted.
 
-                return Encode(output);
+                return Encode(output, outputWidth, outputHeight);
             }
             finally
             {
@@ -200,7 +219,7 @@ namespace NoMapDiscordAdditions
         //  UI extraction — walk live UI children and blit each Image's sprite
         // ═══════════════════════════════════════════════════════════════════
 
-        private static void BlitUIChildren(Color32[] output,
+        private static void BlitUIChildren(Color32[] output, int outputWidth, int outputHeight,
             float mapMinX, float mapMinY, float mapW, float mapH, Transform parent)
         {
             int count = parent.childCount;
@@ -215,25 +234,27 @@ namespace NoMapDiscordAdditions
 
                 var img = child.GetComponent<Image>();
                 if (img != null && img.enabled && img.sprite != null)
-                    BlitImage(output, mapMinX, mapMinY, mapW, mapH, rt, img);
+                    BlitImage(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, rt, img);
 
                 // Recurse — pin GameObjects sometimes nest icons under a wrapper.
                 if (child.childCount > 0)
-                    BlitUIChildren(output, mapMinX, mapMinY, mapW, mapH, child);
+                    BlitUIChildren(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, child);
             }
         }
 
         private static void BlitMarker(RectTransform rt,
-            Color32[] output, float mapMinX, float mapMinY, float mapW, float mapH)
+            Color32[] output, int outputWidth, int outputHeight,
+            float mapMinX, float mapMinY, float mapW, float mapH)
         {
             if (rt == null || !rt.gameObject.activeInHierarchy) return;
 
             var img = rt.GetComponent<Image>();
             if (img != null && img.enabled && img.sprite != null)
-                BlitImage(output, mapMinX, mapMinY, mapW, mapH, rt, img);
+                BlitImage(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, rt, img);
         }
 
         private static void BlitImage(Color32[] output,
+            int outputWidth, int outputHeight,
             float mapMinX, float mapMinY, float mapW, float mapH,
             RectTransform target, Image img)
         {
@@ -250,19 +271,19 @@ namespace NoMapDiscordAdditions
             // Translate to fractional position inside the map's screen rect, then to output px.
             float fx = (cx - mapMinX) / mapW;
             float fy = (cy - mapMinY) / mapH;
-            int outCx = Mathf.RoundToInt(fx * OutputWidth);
-            int outCy = Mathf.RoundToInt(fy * OutputHeight);
+            int outCx = Mathf.RoundToInt(fx * outputWidth);
+            int outCy = Mathf.RoundToInt(fy * outputHeight);
 
-            float scaleX = OutputWidth / mapW;
-            float scaleY = OutputHeight / mapH;
+            float scaleX = outputWidth / mapW;
+            float scaleY = outputHeight / mapH;
             int outW = Mathf.Max(1, Mathf.RoundToInt(wPx * scaleX));
             int outH = Mathf.Max(1, Mathf.RoundToInt(hPx * scaleY));
 
             // Fast cull if completely outside the buffer.
             int halfW = outW / 2;
             int halfH = outH / 2;
-            if (outCx + halfW < 0 || outCx - halfW >= OutputWidth ||
-                outCy + halfH < 0 || outCy - halfH >= OutputHeight)
+            if (outCx + halfW < 0 || outCx - halfW >= outputWidth ||
+                outCy + halfH < 0 || outCy - halfH >= outputHeight)
                 return;
 
             // Read sprite sub-rect from its atlas.
@@ -285,16 +306,16 @@ namespace NoMapDiscordAdditions
             for (int dy = 0; dy < outH; dy++)
             {
                 int py = outCy - halfH + dy;
-                if (py < 0 || py >= OutputHeight) continue;
+                if (py < 0 || py >= outputHeight) continue;
 
                 int sy = Mathf.Clamp((int)(dy * invOutH), 0, srcH - 1);
                 int srcRowOffset = (srcY + sy) * atlasW + srcX;
-                int dstRowOffset = py * OutputWidth;
+                int dstRowOffset = py * outputWidth;
 
                 for (int dx = 0; dx < outW; dx++)
                 {
                     int px = outCx - halfW + dx;
-                    if (px < 0 || px >= OutputWidth) continue;
+                    if (px < 0 || px >= outputWidth) continue;
 
                     int sx = Mathf.Clamp((int)(dx * invOutW), 0, srcW - 1);
                     Color32 sp = atlasPixels[srcRowOffset + sx];
@@ -377,9 +398,9 @@ namespace NoMapDiscordAdditions
         //  Encode
         // ═══════════════════════════════════════════════════════════════════
 
-        private static byte[] Encode(Color32[] output)
+        private static byte[] Encode(Color32[] output, int outputWidth, int outputHeight)
         {
-            var tex = new Texture2D(OutputWidth, OutputHeight, TextureFormat.RGB24, false);
+            var tex = new Texture2D(outputWidth, outputHeight, TextureFormat.RGB24, false);
             tex.SetPixels32(output);
             tex.Apply();
             byte[] data = ImageConversion.EncodeToPNG(tex);

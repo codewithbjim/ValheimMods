@@ -7,7 +7,7 @@ namespace NoMapDiscordAdditions
     {
         private const string RpcRequestConfig = "NMDA_RequestConfig";
         private const string RpcReceiveConfig = "NMDA_ReceiveConfig";
-        private const int ProtocolVersion = 5;
+        private const int ProtocolVersion = 8;
 
         private static bool _initialized;
         private static bool _requestedFromServer;
@@ -17,6 +17,12 @@ namespace NoMapDiscordAdditions
         private static bool? _serverSpoilerImageData;
         private static bool? _serverHideClouds;
         private static bool? _serverEnableCartographyTableLabels;
+        private static int? _serverSendMaxDimension;
+        private static bool? _serverSpawnLabelIncludeDistance;
+        private static bool? _serverSpawnLabelIncludeMapItemSources;
+        private static int? _serverCompileMaxDimension;
+        private static string _serverCompileMessageTemplate;
+        private static string _serverMessageTemplate;
         // Stored in memory only — never written to the client's config file.
         private static string _serverWebhookUrl;
 
@@ -34,6 +40,28 @@ namespace NoMapDiscordAdditions
 
         public static bool EffectiveEnableCartographyTableLabels =>
             _serverEnableCartographyTableLabels ?? (Plugin.EnableCartographyTableLabels?.Value ?? true);
+
+        public static int EffectiveSendMaxDimension =>
+            _serverSendMaxDimension ?? (Plugin.SendMaxDimension?.Value ?? 2560);
+
+        public static bool EffectiveSpawnLabelIncludeDistance =>
+            _serverSpawnLabelIncludeDistance ?? (Plugin.SpawnLabelIncludeDistance?.Value ?? true);
+
+        public static bool EffectiveSpawnLabelIncludeMapItemSources =>
+            _serverSpawnLabelIncludeMapItemSources ?? (Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false);
+
+        public static int EffectiveCompileMaxDimension =>
+            _serverCompileMaxDimension ?? (Plugin.CompileMaxDimension?.Value ?? 2560);
+
+        public static string EffectiveCompileMessageTemplate =>
+            _serverCompileMessageTemplate
+            ?? (Plugin.CompileMessageTemplate?.Value
+                ?? "{player} compiled a map from {tileCount} cartography tables.");
+
+        public static string EffectiveMessageTemplate =>
+            _serverMessageTemplate
+            ?? (Plugin.MessageTemplate?.Value
+                ?? "{player} shared a map update from {biome}{spawnDir}");
 
         public static string EffectiveWebhookUrl =>
             !string.IsNullOrEmpty(_serverWebhookUrl) ? _serverWebhookUrl : Plugin.WebhookUrl.Value;
@@ -75,12 +103,12 @@ namespace NoMapDiscordAdditions
             {
                 // Hot-reload can leave prior handlers registered in ZRoutedRpc.
                 // If already registered, treat as success and keep using the existing hook.
-                Debug.Log($"[NoMapDiscordAdditions] RPC already registered (hot-reload): {name}");
+                ModLog.Info($"[NoMapDiscordAdditions] RPC already registered (hot-reload): {name}");
                 return true;
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[NoMapDiscordAdditions] Failed to register RPC {name}: {e}");
+                ModLog.Warn($"[NoMapDiscordAdditions] Failed to register RPC {name}: {e}");
                 return false;
             }
         }
@@ -110,7 +138,7 @@ namespace NoMapDiscordAdditions
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[NoMapDiscordAdditions] Config request failed (no server override?): {e.Message}");
+                ModLog.Warn($"[NoMapDiscordAdditions] Config request failed (no server override?): {e.Message}");
             }
         }
 
@@ -126,6 +154,12 @@ namespace NoMapDiscordAdditions
             reply.Write(Plugin.SpoilerImageData.Value);
             reply.Write(Plugin.HideClouds.Value);
             reply.Write(Plugin.EnableCartographyTableLabels?.Value ?? true);
+            reply.Write(Plugin.SendMaxDimension?.Value ?? 2560);
+            reply.Write(Plugin.SpawnLabelIncludeDistance?.Value ?? true);
+            reply.Write(Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false);
+            reply.Write(Plugin.CompileMaxDimension?.Value ?? 2560);
+            reply.Write(Plugin.CompileMessageTemplate?.Value ?? "");
+            reply.Write(Plugin.MessageTemplate?.Value ?? "");
             reply.Write(Plugin.WebhookUrl.Value ?? "");
 
             ZRoutedRpc.instance.InvokeRoutedRPC(sender, RpcReceiveConfig, reply);
@@ -147,21 +181,35 @@ namespace NoMapDiscordAdditions
                 _serverSpoilerImageData = pkg.ReadBool();
                 _serverHideClouds = pkg.ReadBool();
                 _serverEnableCartographyTableLabels = pkg.ReadBool();
+                _serverSendMaxDimension = pkg.ReadInt();
+                _serverSpawnLabelIncludeDistance = pkg.ReadBool();
+                _serverSpawnLabelIncludeMapItemSources = pkg.ReadBool();
+                _serverCompileMaxDimension = pkg.ReadInt();
+                string compileTpl = pkg.ReadString();
+                _serverCompileMessageTemplate = string.IsNullOrEmpty(compileTpl) ? null : compileTpl;
+                string msgTpl = pkg.ReadString();
+                _serverMessageTemplate = string.IsNullOrEmpty(msgTpl) ? null : msgTpl;
                 string url = pkg.ReadString();
                 _serverWebhookUrl = string.IsNullOrEmpty(url) ? null : url;
 
                 CaptureButton.RefreshEnabledState();
 
-                Debug.Log(
+                ModLog.Info(
                     $"[NoMapDiscordAdditions] Server-authoritative config applied: " +
                     $"CaptureMethod={_serverCaptureMethod}, CaptureSuperSize={_serverCaptureSuperSize}, " +
                     $"SpoilerImageData={_serverSpoilerImageData}, HideClouds={_serverHideClouds}, " +
                     $"EnableCartographyTableLabels={_serverEnableCartographyTableLabels}, " +
+                    $"SendMaxDimension={_serverSendMaxDimension}, " +
+                    $"SpawnLabelIncludeDistance={_serverSpawnLabelIncludeDistance}, " +
+                    $"SpawnLabelIncludeMapItemSources={_serverSpawnLabelIncludeMapItemSources}, " +
+                    $"CompileMaxDimension={_serverCompileMaxDimension}, " +
+                    $"HasCompileTemplate={_serverCompileMessageTemplate != null}, " +
+                    $"HasMessageTemplate={_serverMessageTemplate != null}, " +
                     $"HasWebhookUrl={_serverWebhookUrl != null}");
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[NoMapDiscordAdditions] Failed to read server config: {e}");
+                ModLog.Warn($"[NoMapDiscordAdditions] Failed to read server config: {e}");
             }
         }
 

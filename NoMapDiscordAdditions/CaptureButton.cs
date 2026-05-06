@@ -1,3 +1,4 @@
+using NoMapDiscordAdditions.MapCompile;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -15,11 +16,9 @@ namespace NoMapDiscordAdditions
         private static Toggle _biomeToggle;               // Toggle component within the clone
         private static Image _biomeToggleCheckmark;       // checkmark dot for active-state tinting
         private static float _biomeToggleWidth  = 130f;  // read from clone at Create() time
-        private static float _biomeToggleHeight =  42f;  // read from clone at Create() time
-        private static Button _cachedRefButton;
-        private static TMP_FontAsset _cachedFont;
-        private static Material _cachedFontMaterial;
-        private static bool _fontLookupAttempted;
+        // Forced to BtnHeight at Create() time so the toggle matches the
+        // adjacent buttons (and the bottom-row MapCompile panel).
+        private static float _biomeToggleHeight = BtnHeight;
 
         private const string ContainerName = "CaptureButtonPanel";
 
@@ -60,7 +59,7 @@ namespace NoMapDiscordAdditions
             ApplyAlignment(rect);
 
             var panelBg = _containerObj.AddComponent<Image>();
-            ApplyPanelBackground(panelBg, minimap);
+            MapUI.ApplyPanelBackground(panelBg, minimap);
 
             var hlg = _containerObj.AddComponent<HorizontalLayoutGroup>();
             hlg.childForceExpandWidth = false;
@@ -81,12 +80,18 @@ namespace NoMapDiscordAdditions
                 // SharedPanel is an inactive template — activate the clone explicitly.
                 _biomeToggleObj.SetActive(true);
 
-                // Read the natural size so the container can size itself correctly.
+                // Width: use the SharedPanel template's natural width so the
+                // "Show Biome Text" label has room. Height: force to BtnHeight
+                // so the toggle stays uniform with the adjacent SEND/COPY
+                // buttons and the bottom-row MapCompile panel — the cloned
+                // toggle's natural height (~42px) made the container taller
+                // than MapCompileButtons (38px buttons), breaking the row alignment.
                 var toggleRect = _biomeToggleObj.GetComponent<RectTransform>();
                 if (toggleRect != null)
                 {
-                    if (toggleRect.sizeDelta.x > 0f) _biomeToggleWidth  = toggleRect.sizeDelta.x;
-                    if (toggleRect.sizeDelta.y > 0f) _biomeToggleHeight = toggleRect.sizeDelta.y;
+                    if (toggleRect.sizeDelta.x > 0f) _biomeToggleWidth = toggleRect.sizeDelta.x;
+                    _biomeToggleHeight = BtnHeight;
+                    toggleRect.sizeDelta = new Vector2(_biomeToggleWidth, BtnHeight);
                 }
 
                 _biomeToggle = _biomeToggleObj.GetComponentInChildren<Toggle>(true);
@@ -113,11 +118,11 @@ namespace NoMapDiscordAdditions
             }
             else
             {
-                Debug.LogWarning("[NoMapDiscordAdditions] SharedPanel not found — biome toggle skipped.");
+                ModLog.Warn("[NoMapDiscordAdditions] SharedPanel not found — biome toggle skipped.");
             }
 
-            _captureBtn = CreateButton("CaptureBtn", _containerObj.transform,
-                BuildSendLabel(), out _captureBtnText);
+            _captureBtn = MapUI.CreateButton("CaptureBtn", _containerObj.transform,
+                BtnWidth, BtnHeight, BuildSendLabel(), out _captureBtnText);
             _captureBtn.onClick.AddListener(() =>
             {
                 var plugin = Plugin.Instance;
@@ -125,8 +130,8 @@ namespace NoMapDiscordAdditions
                 plugin.TriggerDiscordSend();
             });
 
-            _clipboardBtn = CreateButton("ClipboardBtn", _containerObj.transform,
-                BuildCopyLabel(), out _clipboardBtnText);
+            _clipboardBtn = MapUI.CreateButton("ClipboardBtn", _containerObj.transform,
+                BtnWidth, BtnHeight, BuildCopyLabel(), out _clipboardBtnText);
             _clipboardBtn.onClick.AddListener(() =>
             {
                 var plugin = Plugin.Instance;
@@ -138,7 +143,7 @@ namespace NoMapDiscordAdditions
             RefreshEnabledState();
             RefreshBiomeToggleState();
 
-            Debug.Log("[NoMapDiscordAdditions] Map button container created.");
+            ModLog.Info("[NoMapDiscordAdditions] Map button container created.");
         }
 
         /// <summary>
@@ -211,8 +216,10 @@ namespace NoMapDiscordAdditions
         }
 
         /// <summary>
-        /// Repositions the container to match the current ButtonAlignment config.
-        /// Safe to call at any time after Create().
+        /// Pins the container to the bottom-right of the large-map root.
+        /// MapCompileButtons mirrors this on the left so the two panels share
+        /// a single row at the bottom of the map without overlapping. Safe to
+        /// call at any time after Create().
         /// </summary>
         public static void ApplyAlignment()
         {
@@ -224,63 +231,9 @@ namespace NoMapDiscordAdditions
         {
             if (rect == null) return;
             float halfW = rect.sizeDelta.x * 0.5f;
-            var align = Plugin.ButtonAlignment?.Value ?? Plugin.ButtonAlignmentMode.Center;
-            switch (align)
-            {
-                case Plugin.ButtonAlignmentMode.Left:
-                    rect.anchorMin = new Vector2(0f, 0f);
-                    rect.anchorMax = new Vector2(0f, 0f);
-                    rect.anchoredPosition = new Vector2(8f + halfW, -8f);
-                    break;
-                case Plugin.ButtonAlignmentMode.Right:
-                    rect.anchorMin = new Vector2(1f, 0f);
-                    rect.anchorMax = new Vector2(1f, 0f);
-                    rect.anchoredPosition = new Vector2(-(8f + halfW), -8f);
-                    break;
-                default:
-                    rect.anchorMin = new Vector2(0.5f, 0f);
-                    rect.anchorMax = new Vector2(0.5f, 0f);
-                    rect.anchoredPosition = new Vector2(0f, -8f);
-                    break;
-            }
-        }
-
-        private static Button CreateButton(string name, Transform parent, string label,
-            out TextMeshProUGUI labelText)
-        {
-            var btnObj = new GameObject(name);
-            btnObj.transform.SetParent(parent, false);
-
-            var rect = btnObj.AddComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(BtnWidth, BtnHeight);
-
-            var bgImage = btnObj.AddComponent<Image>();
-            var button = btnObj.AddComponent<Button>();
-            button.targetGraphic = bgImage;
-
-            ApplyValheimStyle(bgImage, button);
-
-            var textObj = new GameObject("Text");
-            textObj.transform.SetParent(btnObj.transform, false);
-
-            var textRect = textObj.AddComponent<RectTransform>();
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = new Vector2(8f, 4f);
-            textRect.offsetMax = new Vector2(-8f, -4f);
-
-            var text = textObj.AddComponent<TextMeshProUGUI>();
-            text.text = label;
-            text.alignment = TextAlignmentOptions.Center;
-            // Force single-line so "SEND MAP (F10)" doesn't break onto two lines
-            // when Valheim's wider hotkey labels (F11, KeyPad0, etc.) push past
-            // the natural button width.
-            text.textWrappingMode = TextWrappingModes.NoWrap;
-            text.overflowMode = TextOverflowModes.Overflow;
-            ApplyValheimFont(text);
-
-            labelText = text;
-            return button;
+            rect.anchorMin = new Vector2(1f, 0f);
+            rect.anchorMax = new Vector2(1f, 0f);
+            rect.anchoredPosition = new Vector2(-(8f + halfW), -8f);
         }
 
         // Destroy any leftover containers or legacy button names under largeRoot.
@@ -303,193 +256,7 @@ namespace NoMapDiscordAdditions
             if (!_biomeToggleObj) _biomeToggleObj = null;
             if (!_biomeToggle) _biomeToggle = null;
             if (!_biomeToggleCheckmark) _biomeToggleCheckmark = null;
-            if (!_cachedRefButton) _cachedRefButton = null;
-        }
-
-        private static void ApplyPanelBackground(Image image, Minimap minimap)
-        {
-            // Try to find an existing translucent panel in the large map to copy from.
-            // Common names in Valheim's map UI; fall back to a hardcoded dark tint.
-            Transform panelT = Utils.FindChild(minimap.m_largeRoot.transform, "panel");
-            if (panelT == null)
-                panelT = Utils.FindChild(minimap.m_largeRoot.transform, "Bkg");
-            if (panelT == null)
-                panelT = Utils.FindChild(minimap.m_largeRoot.transform, "bg");
-
-            var src = panelT?.GetComponent<Image>();
-            if (src != null && src.sprite != null)
-            {
-                image.sprite = src.sprite;
-                image.type = src.type;
-                image.material = src.material;
-                image.color = src.color;
-                image.pixelsPerUnitMultiplier = src.pixelsPerUnitMultiplier;
-            }
-            else
-            {
-                image.color = new Color(0.1f, 0.1f, 0.1f, 0.75f);
-            }
-        }
-
-        private static void ApplyValheimStyle(Image image, Button button)
-        {
-            Button refButton = FindReferenceButton();
-            if (refButton == null)
-            {
-                image.color = new Color(0f, 0f, 0f, 0.6f);
-                return;
-            }
-
-            var refImage = refButton.GetComponent<Image>();
-            if (refImage != null)
-            {
-                image.sprite = refImage.sprite;
-                image.type = refImage.type;
-                image.material = refImage.material;
-                image.color = refImage.color;
-                image.pixelsPerUnitMultiplier = refImage.pixelsPerUnitMultiplier;
-            }
-
-            button.transition = refButton.transition;
-            button.colors = refButton.colors;
-            button.spriteState = refButton.spriteState;
-        }
-
-        private static void ApplyValheimFont(TextMeshProUGUI text)
-        {
-            var labelColor = new Color(1f, 0.631f, 0.235f, 1f);
-            text.color = labelColor;
-
-            // Cached after the first lookup: Resources.FindObjectsOfTypeAll<>
-            // walks every loaded asset (TMP_FontAsset and Material), so doing it
-            // once per button per session is wasteful — fonts/materials don't
-            // appear or disappear at runtime.
-            if (!_fontLookupAttempted)
-            {
-                _fontLookupAttempted = true;
-                _cachedFont = FindValheimFontAsset();
-                if (_cachedFont != null)
-                    _cachedFontMaterial = FindOutlineMaterialFor(_cachedFont);
-            }
-
-            if (_cachedFont != null)
-            {
-                text.font = _cachedFont;
-                // Use the matching outline material preset (e.g. "Valheim-AveriaSerifLibre - Outline")
-                // so glyph SDF and material's font atlas are consistent. Copying a material from a
-                // sibling button is unsafe — a different font asset's material won't match this font.
-                if (_cachedFontMaterial != null)
-                    text.fontSharedMaterial = _cachedFontMaterial;
-                text.fontSize = 16f;
-                return;
-            }
-
-            // Fall back: copy everything from a native minimap button TMP_Text.
-            TMP_Text fallback = FindMinimapButtonText() ?? FindAnySceneText();
-            if (fallback != null && fallback.font != null)
-            {
-                text.font = fallback.font;
-                text.fontSharedMaterial = fallback.fontSharedMaterial;
-                text.fontSize = fallback.fontSize;
-                text.fontStyle = fallback.fontStyle;
-                return;
-            }
-
-            Debug.LogWarning("[NoMapDiscordAdditions] No TMP_FontAsset found — button label will not render.");
-            text.fontSize = 16f;
-        }
-
-        private static TMP_FontAsset FindValheimFontAsset()
-        {
-            // Prefer the exact serif asset Valheim uses for body labels; multiple "Averia"
-            // variants exist (Sans, bold, SDF presets) and iteration order is undefined.
-            TMP_FontAsset exact = null;
-            TMP_FontAsset serifLoose = null;
-            TMP_FontAsset anyAveria = null;
-
-            foreach (var f in Resources.FindObjectsOfTypeAll<TMP_FontAsset>())
-            {
-                if (f == null || f.name == null) continue;
-                string n = f.name;
-
-                if (n == "Valheim-AveriaSerifLibre") { exact = f; break; }
-                if (serifLoose == null && n.IndexOf("AveriaSerif", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                    serifLoose = f;
-                if (anyAveria == null && n.IndexOf("Averia", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                    anyAveria = f;
-            }
-
-            return exact ?? serifLoose ?? anyAveria;
-        }
-
-        // Find the TMP material preset matching this font asset, preferring the outline variant
-        // (Valheim labels use "<font> - Outline"). Returns null if no specific match is found,
-        // letting TMP fall back to the font's default material.
-        private static Material FindOutlineMaterialFor(TMP_FontAsset font)
-        {
-            if (font == null) return null;
-            string fontName = font.name;
-            Material outline = null;
-            Material plain = null;
-
-            foreach (var m in Resources.FindObjectsOfTypeAll<Material>())
-            {
-                if (m == null || m.name == null) continue;
-                string n = m.name;
-                if (n.IndexOf(fontName, System.StringComparison.Ordinal) < 0) continue;
-
-                if (outline == null && n.IndexOf("Outline", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                    outline = m;
-                else if (plain == null)
-                    plain = m;
-            }
-
-            return outline ?? plain;
-        }
-
-        // Find TMP_Text on a native minimap button (skipping our own).
-        private static TMP_Text FindMinimapButtonText()
-        {
-            var minimap = Minimap.instance;
-            if (minimap == null || minimap.m_largeRoot == null) return null;
-
-            foreach (var b in minimap.m_largeRoot.GetComponentsInChildren<Button>(true))
-            {
-                if (b == null || b.gameObject.name == "CaptureBtn" || b.gameObject.name == "ClipboardBtn") continue;
-                if (_biomeToggleObj != null && b.transform.IsChildOf(_biomeToggleObj.transform)) continue;
-                var t = b.GetComponentInChildren<TMP_Text>(true);
-                if (t != null && t.font != null) return t;
-            }
-            return null;
-        }
-
-        private static TMP_Text FindAnySceneText()
-        {
-            foreach (var t in Resources.FindObjectsOfTypeAll<TMP_Text>())
-                if (t != null && t.font != null) return t;
-            return null;
-        }
-
-        private static Button FindReferenceButton()
-        {
-            if (_cachedRefButton != null)
-                return _cachedRefButton;
-
-            foreach (var b in Resources.FindObjectsOfTypeAll<Button>())
-            {
-                if (b == null) continue;
-                var img = b.GetComponent<Image>();
-                if (img == null || img.sprite == null) continue;
-
-                var spriteName = img.sprite.name ?? string.Empty;
-                if (spriteName == "button" || spriteName.StartsWith("button_"))
-                {
-                    _cachedRefButton = b;
-                    return b;
-                }
-            }
-
-            return null;
+            MapUI.InvalidateCaches();
         }
     }
 }

@@ -11,7 +11,7 @@ namespace NoMapDiscordAdditions
             var webhookUrl = ModHelpers.EffectiveConfig.WebhookUrl;
             if (string.IsNullOrEmpty(webhookUrl))
             {
-                Debug.LogWarning("[NoMapDiscordAdditions] Webhook URL not configured.");
+                ModLog.Warn("[NoMapDiscordAdditions] Webhook URL not configured.");
                 yield break;
             }
 
@@ -30,11 +30,11 @@ namespace NoMapDiscordAdditions
 
                 if (request.result != UnityWebRequest.Result.Success)
                 {
-                    Debug.LogError($"[NoMapDiscordAdditions] Discord webhook failed: {request.error}");
+                    ModLog.Error($"[NoMapDiscordAdditions] Discord webhook failed: {request.error}");
                 }
                 else
                 {
-                    Debug.Log("[NoMapDiscordAdditions] Map screenshot sent to Discord.");
+                    ModLog.Info("[NoMapDiscordAdditions] Map screenshot sent to Discord.");
                 }
             }
         }

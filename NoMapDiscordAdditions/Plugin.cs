@@ -14,16 +14,9 @@ namespace NoMapDiscordAdditions
             ScreenCapture
         }
 
-        public enum ButtonAlignmentMode
-        {
-            Left,
-            Center,
-            Right
-        }
-
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.0.3";
+        public const string PluginVersion = "1.0.4";
         private const string SyncedWithServerTag = " (Synced with Server)";
 
         public static Plugin Instance { get; private set; }
@@ -32,14 +25,18 @@ namespace NoMapDiscordAdditions
         public static ConfigEntry<int> CaptureSuperSize;
         public static ConfigEntry<KeyCode> ScreenshotKey;
         public static ConfigEntry<KeyCode> CopyKey;
+        public static ConfigEntry<KeyCode> CopyFullResModifier;
         public static ConfigEntry<CaptureMethodMode> CaptureMethod;
         public static ConfigEntry<bool> SpoilerImageData;
         public static ConfigEntry<bool> HideClouds;
         public static ConfigEntry<bool> ShowBiomeText;
-        public static ConfigEntry<ButtonAlignmentMode> ButtonAlignment;
         public static ConfigEntry<bool> EnableCartographyTableLabels;
         public static ConfigEntry<bool> SpawnLabelIncludeDistance;
         public static ConfigEntry<bool> SpawnLabelIncludeMapItemSources;
+        public static ConfigEntry<int> CompileMaxDimension;
+        public static ConfigEntry<string> CompileMessageTemplate;
+        public static ConfigEntry<int> SendMaxDimension;
+        public static ConfigEntry<bool> EnableLogs;
 
         private Harmony _harmony;
         private bool _sendingInProgress;
@@ -55,10 +52,11 @@ namespace NoMapDiscordAdditions
             MessageTemplate = Config.Bind(
                 "Discord", "Message Template", "{player} shared a map update from {biome}{spawnDir}",
                 "Message sent with each screenshot. Supports {player}, {biome}, and {spawnDir} placeholders. " +
-                "{spawnDir} expands to e.g. \" — NE of Spawn\" when the map center is >200 units from spawn, otherwise empty.");
+                "{spawnDir} expands to e.g. \" — NE of Spawn\" when the map center is >200 units from spawn, otherwise empty." +
+                SyncedWithServerTag);
 
             CaptureSuperSize = Config.Bind(
-                "Discord", "Capture Super Size", 2,
+                "General", "Capture Super Size", 2,
                 new ConfigDescription(
                     "Screen-capture quality multiplier before map crop. " +
                     "Higher values improve detail but increase frame-time and VRAM use. 1 = native, 2 = recommended, 3-4 = heavy." +
@@ -73,10 +71,22 @@ namespace NoMapDiscordAdditions
                 "Controls", "Copy Key", KeyCode.F11,
                 "Press while large map is open to capture and copy to the clipboard.");
 
+            CopyFullResModifier = Config.Bind(
+                "Controls", "Copy Full Resolution Modifier", KeyCode.LeftControl,
+                "Hold this key while clicking COPY MAP / COPY (compiled map) to " +
+                "raise the cap from Send Max Dimension to 4096 — useful for high-" +
+                "fidelity output when pasting into an image editor.");
+
             CaptureMethod = Config.Bind(
-                "Discord", "Capture Method", CaptureMethodMode.ScreenCapture,
+                "General", "Capture Method", CaptureMethodMode.ScreenCapture,
                 "Choose the map capture mode." +
                 SyncedWithServerTag);
+
+            EnableLogs = Config.Bind(
+                "General", "Enable Logs", false,
+                "If true, this mod prints info/warning/error messages to the BepInEx " +
+                "console and Player.log. Defaults to false to keep logs quiet during " +
+                "normal play; turn on if you need to investigate a problem.");
 
             SpoilerImageData = Config.Bind(
                 "Discord", "Spoiler Image Data", false,
@@ -92,28 +102,57 @@ namespace NoMapDiscordAdditions
                 "UI", "Show Biome Text", false,
                 "If enabled, the biome label is included in captured map images. Client-only.");
 
-            ButtonAlignment = Config.Bind(
-                "UI", "Button Alignment", ButtonAlignmentMode.Right,
-                "Horizontal position of the capture button container: Left, Center, or Right.");
-
             EnableCartographyTableLabels = Config.Bind(
-                "Cartography Table Labels", "Enabled", true,
+                "Pin Label", "Enabled", true,
                 "If enabled, cartography-table pins on the large map are decorated with a " +
                 "distance/direction-from-spawn caption during a capture, baked into the screenshot." +
                 SyncedWithServerTag);
 
             SpawnLabelIncludeDistance = Config.Bind(
-                "Cartography Table Labels", "Include Distance", true,
+                "Pin Label", "Include Distance", true,
                 "If enabled, the label includes the meters from spawn (e.g. \"1240m NorthEast (45°)\"). " +
-                "If disabled, only the direction is shown (e.g. \"NorthEast (45°)\").");
+                "If disabled, only the direction is shown (e.g. \"NorthEast (45°)\")." +
+                SyncedWithServerTag);
 
             SpawnLabelIncludeMapItemSources = Config.Bind(
-                "Cartography Table Labels", "Include Map Item Sources", false,
+                "Pin Label", "Include Map Item Sources", false,
                 "If enabled, the spawn label is also shown when the map is opened from " +
-                "a portable map item (e.g. ZenMap parchment), not just from a cartography table.");
+                "a portable map item (e.g. ZenMap parchment), not just from a cartography table." +
+                SyncedWithServerTag);
+
+            CompileMaxDimension = Config.Bind(
+                "Map Compile", "Max Output Dimension", 2560,
+                new ConfigDescription(
+                    "Longest pixel dimension of the compiled output PNG. The other axis " +
+                    "is sized to preserve world aspect. File size scales with the square " +
+                    "of this value (2× dimension ≈ 4× file size). Default 2560 keeps " +
+                    "even dense compositions under Discord's 10MB free-tier attachment " +
+                    "limit; raise to 3072 for sharper output if your compositions are " +
+                    "lighter, or to 4096+ if you don't plan to send via Discord." +
+                    SyncedWithServerTag,
+                    new AcceptableValueRange<int>(512, 8192)));
+
+            CompileMessageTemplate = Config.Bind(
+                "Map Compile", "Compile Message Template",
+                "{player} compiled a map from {tileCount} cartography tables.",
+                "Discord message template used when SEND TO DISCORD is clicked from " +
+                "the compile result panel. Supports {player} and {tileCount} placeholders." +
+                SyncedWithServerTag);
+
+            SendMaxDimension = Config.Bind(
+                "Discord", "Send Max Dimension", 2560,
+                new ConfigDescription(
+                    "Cap on the longest pixel dimension of any image sent to Discord " +
+                    "OR copied to the clipboard via COPY MAP / COPY (compiled). Larger " +
+                    "captures are downscaled before encoding. Keeps even 4K-screen " +
+                    "ScreenCapture output safely under Discord's 10MB free-tier limit. " +
+                    "Hold Left CTRL when clicking COPY to raise the cap to 4096 — high " +
+                    "fidelity for image editing without producing pathologically large " +
+                    "clipboard payloads. Discord-bound paths always honor this setting." +
+                    SyncedWithServerTag,
+                    new AcceptableValueRange<int>(512, 8192)));
 
             WebhookUrl.SettingChanged += (_, __) => CaptureButton.RefreshEnabledState();
-            ButtonAlignment.SettingChanged += (_, __) => CaptureButton.ApplyAlignment();
             ShowBiomeText.SettingChanged += (_, __) => CaptureButton.RefreshBiomeToggleState();
             ScreenshotKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
             CopyKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
@@ -141,6 +180,8 @@ namespace NoMapDiscordAdditions
                 TablePinLabel.DestroyOrphans();
                 CaptureButton.Create();
                 CaptureButton.SetVisible(large);
+                MapCompile.MapCompileButtons.Create();
+                MapCompile.MapCompileButtons.SetVisible(large);
             }
 
             Logger.LogInfo($"{PluginName} v{PluginVersion} loaded.");
@@ -166,7 +207,11 @@ namespace NoMapDiscordAdditions
 
         /// <summary>
         /// Captures the visible map and copies it to the system clipboard.
-        /// Called by the Copy UI button.
+        /// Called by the COPY MAP UI button. By default the copied image is
+        /// capped to <see cref="SendMaxDimension"/> (matches the Discord cap)
+        /// to keep clipboard payloads sane. Holding Left CTRL at click time
+        /// bypasses the cap and copies full-resolution — useful when the
+        /// player wants to paste into an image editor at maximum quality.
         /// </summary>
         public void TriggerClipboardCopy()
         {
@@ -174,16 +219,37 @@ namespace NoMapDiscordAdditions
                 return;
 
             _sendingInProgress = true;
+            bool fullResolution = IsFullResModifierHeld();
             bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture;
-            StartCoroutine(preferTexture ? CaptureAndCopyPreferTexture() : CaptureAndCopyScreen());
+            StartCoroutine(preferTexture
+                ? CaptureAndCopyPreferTexture(fullResolution)
+                : CaptureAndCopyScreen(fullResolution));
         }
 
-        private System.Collections.IEnumerator CaptureAndCopyScreen()
+        // Shared modifier check — the configured key bumps the COPY cap from
+        // SendMaxDimension up to FullResolutionMaxDim. Lives on Plugin so
+        // MapCompileResultPanel can reuse it. Falls back to LeftControl if
+        // the config is unavailable (e.g. very early in startup).
+        public static bool IsFullResModifierHeld()
+            => Input.GetKey(CopyFullResModifier?.Value ?? KeyCode.LeftControl);
+
+        // Hard ceiling for "full resolution" COPY (CTRL-modified). Even when
+        // the player asks for max quality, we still clamp at 4096 — a 4K
+        // screen at superSize=2 produces 7680x4320 raw which would balloon
+        // the clipboard payload to 50+ MB and choke paste targets like
+        // Discord's web client. 4096 keeps screen captures sharp without
+        // pathological sizes; texture captures (1920x1080 native) sail
+        // under it untouched.
+        private const int FullResolutionMaxDim = 4096;
+
+        private System.Collections.IEnumerator CaptureAndCopyScreen(bool fullResolution)
         {
             try
             {
                 byte[] imageData = null;
                 yield return MapCapture.CaptureVisibleMap(data => imageData = data);
+                int cap = fullResolution ? FullResolutionMaxDim : ModHelpers.EffectiveConfig.SendMaxDimension;
+                imageData = DownscalePngForSend(imageData, cap);
                 CopyToClipboard(imageData);
             }
             finally
@@ -192,15 +258,143 @@ namespace NoMapDiscordAdditions
             }
         }
 
-        private System.Collections.IEnumerator CaptureAndCopyPreferTexture()
+        private System.Collections.IEnumerator CaptureAndCopyPreferTexture(bool fullResolution)
         {
             try
             {
                 yield return new WaitForEndOfFrame();
-                byte[] imageData = MapCaptureTexture.CaptureMap();
+
+                byte[] imageData;
+                if (fullResolution)
+                {
+                    // Render at 4K-equivalent (max dim 4096, 16:9 aspect to match
+                    // the default 1920×1080) so CTRL+COPY actually produces a
+                    // high-resolution image. The shader runs at 4096×2304 fragments
+                    // and pin sprites are rasterized at the same scale, so detail
+                    // genuinely improves vs. just upscaling a 1920×1080 capture.
+                    int targetW = FullResolutionMaxDim;
+                    int targetH = FullResolutionMaxDim * MapCaptureTexture.OutputHeight
+                                  / MapCaptureTexture.OutputWidth;
+                    imageData = MapCaptureTexture.CaptureMap(targetW, targetH);
+                }
+                else
+                {
+                    imageData = MapCaptureTexture.CaptureMap();
+                }
+
                 if (imageData == null)
                     yield return MapCapture.CaptureVisibleMap(data => imageData = data);
+                int cap = fullResolution ? FullResolutionMaxDim : ModHelpers.EffectiveConfig.SendMaxDimension;
+                imageData = DownscalePngForSend(imageData, cap);
                 CopyToClipboard(imageData);
+            }
+            finally
+            {
+                _sendingInProgress = false;
+            }
+        }
+
+        /// <summary>
+        /// Public entry point for copying arbitrary PNG bytes to the clipboard.
+        /// Used by the Map Compile result panel. Default cap is
+        /// <see cref="SendMaxDimension"/>; pass <paramref name="fullResolution"/>=true
+        /// (when Left CTRL is held) to raise the cap to <see cref="FullResolutionMaxDim"/>
+        /// (4096) so high-resolution edits are still possible without producing
+        /// a 50+ MB clipboard payload. Safe to call from the Unity main thread.
+        /// </summary>
+        public void CopyBytesToClipboard(byte[] pngData, bool fullResolution = false)
+        {
+            int cap = fullResolution ? FullResolutionMaxDim : ModHelpers.EffectiveConfig.SendMaxDimension;
+            pngData = DownscalePngForSend(pngData, cap);
+            CopyToClipboard(pngData);
+        }
+
+        /// <summary>
+        /// Copy a string to the system clipboard as CF_UNICODETEXT.
+        /// We can't use Unity's <c>GUIUtility.systemCopyBuffer</c> because that
+        /// lives in UnityEngine.IMGUIModule which this mod doesn't reference,
+        /// and pulling in IMGUI just for one helper isn't worth it. The
+        /// existing CF_DIB image path already wires up OpenClipboard /
+        /// GlobalAlloc / SetClipboardData, so the text variant is just a
+        /// shorter call sequence that reuses those imports.
+        /// Returns true on success, false on failure (errors are logged).
+        /// </summary>
+        public static bool CopyTextToClipboard(string text)
+        {
+            if (text == null) text = string.Empty;
+
+            // CF_UNICODETEXT requires a null-terminated UTF-16 LE buffer.
+            byte[] utf16 = System.Text.Encoding.Unicode.GetBytes(text);
+            byte[] buffer = new byte[utf16.Length + 2];
+            System.Buffer.BlockCopy(utf16, 0, buffer, 0, utf16.Length);
+            // trailing 2 bytes already zero — that's the L'\0' terminator.
+
+            System.IntPtr hMem = System.IntPtr.Zero;
+            try
+            {
+                hMem = AllocGlobal(buffer);
+                if (!OpenClipboard(System.IntPtr.Zero))
+                {
+                    GlobalFree(hMem);
+                    ModLog.Error($"[NoMapDiscordAdditions] Text clipboard: OpenClipboard failed " +
+                                   $"(error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}).");
+                    return false;
+                }
+
+                EmptyClipboard();
+                // Clipboard takes ownership of hMem on success — do not free
+                // it after this point.
+                System.IntPtr setResult = SetClipboardData(CF_UNICODETEXT, hMem);
+                CloseClipboard();
+                if (setResult == System.IntPtr.Zero)
+                {
+                    GlobalFree(hMem);
+                    ModLog.Error("[NoMapDiscordAdditions] Text clipboard: SetClipboardData failed.");
+                    return false;
+                }
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                if (hMem != System.IntPtr.Zero) GlobalFree(hMem);
+                ModLog.Error($"[NoMapDiscordAdditions] Text clipboard error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private const uint CF_UNICODETEXT = 13;
+
+        /// <summary>
+        /// Send a previously-encoded PNG (e.g. a compiled map) to Discord using
+        /// the configured webhook + the <see cref="CompileMessageTemplate"/>.
+        /// Independent of the live capture pipeline — no map mode requirement.
+        /// </summary>
+        public void SendCompiledImage(byte[] pngData, int tileCount)
+        {
+            if (_sendingInProgress) return;
+            if (string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl)) return;
+            if (pngData == null || pngData.Length == 0) return;
+
+            _sendingInProgress = true;
+            StartCoroutine(SendCompiledImageCoroutine(pngData, tileCount));
+        }
+
+        private System.Collections.IEnumerator SendCompiledImageCoroutine(byte[] pngData, int tileCount)
+        {
+            try
+            {
+                var player = Player.m_localPlayer;
+                string playerName = player != null ? player.GetPlayerName() : "unknown";
+                string template = ModHelpers.EffectiveConfig.CompileMessageTemplate;
+                string message = template
+                    .Replace("{player}", playerName)
+                    .Replace("{tileCount}", tileCount.ToString());
+                string fileName = BuildMapFileName(playerName, $"compiled_{tileCount}t");
+
+                player?.Message(MessageHud.MessageType.Center, "Sending compiled map to Discord...");
+                pngData = DownscalePngForSend(pngData, ModHelpers.EffectiveConfig.SendMaxDimension);
+                yield return DiscordWebhook.SendImage(
+                    pngData, fileName, message, ModHelpers.EffectiveConfig.SpoilerImageData);
             }
             finally
             {
@@ -241,7 +435,7 @@ namespace NoMapDiscordAdditions
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[NoMapDiscordAdditions] Clipboard copy failed: {ex.Message}");
+                ModLog.Error($"[NoMapDiscordAdditions] Clipboard copy failed: {ex.Message}");
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Failed to copy map to clipboard.");
             }
         }
@@ -416,7 +610,7 @@ namespace NoMapDiscordAdditions
             // existing config value with a newer default. Append in that case so the
             // spawn-direction info still reaches Discord without requiring users to
             // manually edit their .cfg.
-            message = MessageTemplate.Value ?? string.Empty;
+            message = ModHelpers.EffectiveConfig.MessageTemplate ?? string.Empty;
             if (message.Contains("{spawnDir}"))
                 message = message.Replace("{spawnDir}", spawnDirText);
             else if (spawnDirText.Length > 0)
@@ -436,10 +630,65 @@ namespace NoMapDiscordAdditions
                 yield break;
             }
 
+            // Cap longest dimension before sending so 4K / ultrawide screens
+            // don't blow past Discord's 10MB attachment limit. Clipboard
+            // copies don't go through here, so COPY MAP keeps full resolution.
+            imageData = DownscalePngForSend(imageData, ModHelpers.EffectiveConfig.SendMaxDimension);
+
             string fileName = BuildMapFileName(playerName, biome);
             player?.Message(MessageHud.MessageType.Center, "Sending map to Discord...");
             yield return DiscordWebhook.SendImage(
                 imageData, fileName, message, ModHelpers.EffectiveConfig.SpoilerImageData);
+        }
+
+        // Decode → resize → re-encode if the longest pixel dimension exceeds
+        // <paramref name="maxDim"/>. Returns the original bytes when no scaling
+        // is needed (max dim already at/below the cap) or when decoding fails.
+        // Always emits a 24bpp PNG since the SEND paths never carry alpha.
+        private static byte[] DownscalePngForSend(byte[] pngBytes, int maxDim)
+        {
+            if (pngBytes == null || pngBytes.Length == 0) return pngBytes;
+            if (maxDim < 64) return pngBytes;
+
+            try
+            {
+                using (var ms = new System.IO.MemoryStream(pngBytes))
+                using (var src = new System.Drawing.Bitmap(ms))
+                {
+                    int w = src.Width, h = src.Height;
+                    int longest = w > h ? w : h;
+                    if (longest <= maxDim) return pngBytes;
+
+                    float scale = (float)maxDim / longest;
+                    int newW = UnityEngine.Mathf.Max(1, UnityEngine.Mathf.RoundToInt(w * scale));
+                    int newH = UnityEngine.Mathf.Max(1, UnityEngine.Mathf.RoundToInt(h * scale));
+
+                    using (var resized = new System.Drawing.Bitmap(
+                        newW, newH, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+                    {
+                        using (var g = System.Drawing.Graphics.FromImage(resized))
+                        {
+                            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                            g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                            g.DrawImage(src, 0, 0, newW, newH);
+                        }
+                        using (var outMs = new System.IO.MemoryStream())
+                        {
+                            resized.Save(outMs, System.Drawing.Imaging.ImageFormat.Png);
+                            byte[] result = outMs.ToArray();
+                            ModLog.Info($"[NoMapDiscordAdditions] Discord send downscaled " +
+                                      $"{w}x{h} -> {newW}x{newH} ({pngBytes.Length} -> {result.Length} bytes).");
+                            return result;
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] Send downscale failed, sending original: {ex.Message}");
+                return pngBytes;
+            }
         }
 
         // Filename: <player>_<biome>_<yyyyMMdd-HHmmss>.png, with anything that

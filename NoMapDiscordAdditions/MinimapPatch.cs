@@ -1,4 +1,5 @@
 using HarmonyLib;
+using NoMapDiscordAdditions.MapCompile;
 using UnityEngine;
 
 namespace NoMapDiscordAdditions
@@ -26,13 +27,15 @@ namespace NoMapDiscordAdditions
         static void Minimap_Start_Postfix()
         {
             CaptureButton.Create();
+            MapCompileButtons.Create();
         }
 
         /// <summary>
-        /// Show/hide the capture button when map mode changes.
-        /// Also clears the cached cartography-table position when the map closes,
-        /// so a stale "X of Spawn" label can't leak into a later capture opened
-        /// by some other path (M key, map item, etc.).
+        /// Show/hide overlay UI when map mode changes.
+        /// Also clears cached active-table refs when the map closes — both for
+        /// the SpawnDirection label (so a stale "X of Spawn" can't leak into a
+        /// later capture) and the compile session (so "ADD TILE" disables until
+        /// the player re-opens the map at a table).
         /// </summary>
         [HarmonyPatch(typeof(Minimap), "SetMapMode")]
         [HarmonyPostfix]
@@ -40,8 +43,14 @@ namespace NoMapDiscordAdditions
         {
             bool large = mode == Minimap.MapMode.Large;
             CaptureButton.SetVisible(large);
+            MapCompileButtons.SetVisible(large);
             if (!large)
+            {
                 SpawnDirection.Clear();
+                MapCompileSession.ClearActiveTable();
+                if (MapCompileResultPanel.IsVisible)
+                    MapCompileResultPanel.Hide();
+            }
         }
     }
 }

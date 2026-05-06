@@ -101,7 +101,7 @@ namespace NoMapDiscordAdditions
                 }
                 catch (System.Exception ex)
                 {
-                    Debug.LogError($"[NoMapDiscordAdditions] Screen capture failed: {ex.Message}");
+                    ModLog.Error($"[NoMapDiscordAdditions] Screen capture failed: {ex.Message}");
                 }
 
                 if (screen == null)
@@ -126,7 +126,7 @@ namespace NoMapDiscordAdditions
                 }
                 catch (System.Exception ex)
                 {
-                    Debug.LogError($"[NoMapDiscordAdditions] PNG encode failed: {ex.Message}");
+                    ModLog.Error($"[NoMapDiscordAdditions] PNG encode failed: {ex.Message}");
                 }
                 finally
                 {
@@ -195,7 +195,7 @@ namespace NoMapDiscordAdditions
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning($"[NoMapDiscordAdditions] Crop failed, sending full screen: {ex.Message}");
+                ModLog.Warn($"[NoMapDiscordAdditions] Crop failed, sending full screen: {ex.Message}");
                 return null;
             }
         }

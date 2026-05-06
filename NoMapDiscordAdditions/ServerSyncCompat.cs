@@ -46,13 +46,19 @@ namespace NoMapDiscordAdditions
                 AddSynced(Plugin.SpoilerImageData, true);
                 AddSynced(Plugin.HideClouds, true);
                 AddSynced(Plugin.EnableCartographyTableLabels, true);
+                AddSynced(Plugin.SpawnLabelIncludeDistance, true);
+                AddSynced(Plugin.SpawnLabelIncludeMapItemSources, true);
+                AddSynced(Plugin.CompileMaxDimension, true);
+                AddSynced(Plugin.CompileMessageTemplate, true);
+                AddSynced(Plugin.MessageTemplate, true);
+                AddSynced(Plugin.SendMaxDimension, true);
 
                 IsActive = true;
-                Debug.Log("[NoMapDiscordAdditions] ServerSync detected; using server-authoritative config sync.");
+                ModLog.Info("[NoMapDiscordAdditions] ServerSync detected; using server-authoritative config sync.");
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[NoMapDiscordAdditions] ServerSync init failed; falling back to RPC sync. {e.Message}");
+                ModLog.Warn($"[NoMapDiscordAdditions] ServerSync init failed; falling back to RPC sync. {e.Message}");
                 IsActive = false;
                 _configSync = null;
                 _syncedProp = null;

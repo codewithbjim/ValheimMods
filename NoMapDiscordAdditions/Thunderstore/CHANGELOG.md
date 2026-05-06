@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.4
+
+### Map Compile (new)
+
+- Added **MAP COMPILE** mode — stitch every cartography table you visit into one large PNG
+  - Bottom-left panel on the large map: `START COMPILE` / `RESUME COMPILE (N)` (idle), `ADD TILE (N)` / `FINISH (N)` / `CANCEL` (active)
+  - `ADD TILE` is enabled only when the map was opened at a cartography table; tiles within ~8m of an existing tile replace it in place (lets you re-shoot a table without ending up with duplicates)
+  - Per-world, per-player session persisted to disk after every add — a crash or disconnect mid-mapping doesn't lose progress
+  - `FINISH` opens a result panel with a thumbnail and five actions: **SAVE** (writes PNG to disk; morphs into **COPY DIR** afterward to put the folder on the clipboard), **COPY** (clipboard), **SEND TO DISCORD** (uses webhook + compile message template), **DISCARD**, **DONE**
+  - Added `Map Compile.Max Output Dimension` config (default `2560`, range `512`–`8192`, server-synced) — caps the longest pixel dimension of the composed PNG; default keeps even dense compositions under Discord's 10MB free-tier attachment limit
+  - Added `Map Compile.Compile Message Template` config (default `"{player} compiled a map from {tileCount} cartography tables."`, server-synced) — supports `{player}` and `{tileCount}` placeholders
+
+### Capture / clipboard
+
+- Added `Discord.Send Max Dimension` config (default `2560`, range `512`–`8192`, server-synced) — caps every image sent to Discord **or** copied to the clipboard, keeping 4K / ultrawide captures under Discord's 10MB free-tier limit
+- Added `Controls.Copy Full Resolution Modifier` config (default `LeftControl`) — hold while clicking **COPY MAP** (or **COPY** in the compile result panel) to raise the cap to `4096` for high-fidelity edits in an image editor
+- `MapCaptureTexture.CaptureMap` now accepts a custom output resolution; CTRL+COPY in texture-capture mode renders the shader at 4096×2304 fragments instead of upscaling a 1920×1080 capture
+- `Show Biome Text` toggle and the SEND/COPY buttons now share a single uniform row height with the new compile panel
+
+### Server sync / config
+
+- More settings now flow through ServerSync **and** the built-in RPC sync: `Discord.Send Max Dimension`, `Discord.Message Template`, `Map Compile.Max Output Dimension`, `Map Compile.Compile Message Template`, `Pin Label.Include Distance`, `Pin Label.Include Map Item Sources`
+- RPC protocol bumped to version `8` — older clients/servers will silently fall back to local config if versions don't match
+- Renamed config section `Cartography Table Labels` → `Pin Label`
+- Moved `Capture Super Size` and `Capture Method` from `Discord` to `General`
+- Removed `UI.Button Alignment` config — capture buttons are now pinned bottom-right and the compile panel bottom-left, sharing one row at the bottom of the map
+
+### Logging / quality of life
+
+- Added `General.Enable Logs` config (default `false`) — silences info/warning messages from this mod in the BepInEx console and Player.log unless explicitly enabled
+- All internal logging routed through a single `ModLog` helper so the toggle catches every call site
+
 ## 1.0.3
 
 - Added **COPY MAP** button beside **SEND MAP** — copies the captured PNG to the system clipboard (paste straight into Discord/Slack/etc.)

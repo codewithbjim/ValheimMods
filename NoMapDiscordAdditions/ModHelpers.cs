@@ -45,6 +45,32 @@ namespace NoMapDiscordAdditions
             public static bool EnableCartographyTableLabels => ServerSyncCompat.IsActive
                 ? (Plugin.EnableCartographyTableLabels?.Value ?? true)
                 : NetworkConfigSync.EffectiveEnableCartographyTableLabels;
+
+            public static int SendMaxDimension => ServerSyncCompat.IsActive
+                ? (Plugin.SendMaxDimension?.Value ?? 2560)
+                : NetworkConfigSync.EffectiveSendMaxDimension;
+
+            public static bool SpawnLabelIncludeDistance => ServerSyncCompat.IsActive
+                ? (Plugin.SpawnLabelIncludeDistance?.Value ?? true)
+                : NetworkConfigSync.EffectiveSpawnLabelIncludeDistance;
+
+            public static bool SpawnLabelIncludeMapItemSources => ServerSyncCompat.IsActive
+                ? (Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false)
+                : NetworkConfigSync.EffectiveSpawnLabelIncludeMapItemSources;
+
+            public static int CompileMaxDimension => ServerSyncCompat.IsActive
+                ? (Plugin.CompileMaxDimension?.Value ?? 2560)
+                : NetworkConfigSync.EffectiveCompileMaxDimension;
+
+            public static string CompileMessageTemplate => ServerSyncCompat.IsActive
+                ? (Plugin.CompileMessageTemplate?.Value
+                    ?? "{player} compiled a map from {tileCount} cartography tables.")
+                : NetworkConfigSync.EffectiveCompileMessageTemplate;
+
+            public static string MessageTemplate => ServerSyncCompat.IsActive
+                ? (Plugin.MessageTemplate?.Value
+                    ?? "{player} shared a map update from {biome}{spawnDir}")
+                : NetworkConfigSync.EffectiveMessageTemplate;
         }
 
         // ── Shader property suppression ─────────────────────────────────────

@@ -13,6 +13,7 @@
     <ValheimPublicizedDir>$(ValheimManagedDir)\publicized_assemblies</ValheimPublicizedDir>
     <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
     <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
+    <JsonDotNetDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-JsonDotNET\Newtonsoft.Json.dll</JsonDotNetDll>
     <TSPluginsDir>E:\ValheimMods\ValheimMods\NoMapDiscordAdditions\Thunderstore\plugins</TSPluginsDir>
   </PropertyGroup>
 
@@ -45,6 +46,18 @@
     <Reference Include="System.Drawing" />
   </ItemGroup>
 
+  <!-- Newtonsoft.Json via the Thunderstore JsonDotNET package
+       (https://thunderstore.io/c/valheim/p/ValheimModding/JsonDotNET/).
+       The DLL ships in BepInEx/plugins/ValheimModding-JsonDotNET; we reference
+       it directly from the active r2modmanPlus profile so the build picks up
+       whatever version that profile has installed. -->
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(JsonDotNetDll)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
   <!-- BepInEx -->
   <ItemGroup>
     <Reference Include="BepInEx">
@@ -72,6 +85,17 @@
     </Reference>
     <Reference Include="assembly_utils">
       <HintPath>$(ValheimPublicizedDir)\assembly_utils_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Override the .NET Framework's bundled netstandard 2.0 facade with Unity's
+       netstandard 2.1 (which the Unity *.Module DLLs reference). Without this,
+       any reference to e.g. UnityEngine.ImageConversionModule triggers CS1705
+       (a real error, not a warning — NoWarn cannot suppress it). -->
+  <ItemGroup>
+    <Reference Include="netstandard">
+      <HintPath>$(ValheimManagedDir)\netstandard.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
