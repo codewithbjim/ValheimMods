@@ -13,7 +13,7 @@ Cartography-table pins are decorated with distance/bearing-from-spawn captions b
 
 The bottom-right of the large map gets a `Show Biome Text` toggle, a **SEND MAP** button (default `F10`), and a **COPY MAP** button (default `F11`).
 
-![Large map UI — capture buttons in idle mode](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg)
+![Large map UI — capture buttons in idle mode](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg)
 
 - **SEND MAP** posts the capture to your Discord webhook with a configurable message template
 - **COPY MAP** writes the PNG to the system clipboard — paste straight into Discord, Slack, or an image editor
@@ -24,7 +24,7 @@ The bottom-right of the large map gets a `Show Biome Text` toggle, a **SEND MAP*
 
 | Discord post | Spoiler-tagged |
 |---|---|
-| ![SEND MAP — Discord post with biome and spawn-direction caption](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/1.png) | ![SEND MAP — spoiler-tagged attachment](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/5.png) |
+| ![SEND MAP — Discord post with biome and spawn-direction caption](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/1.png) | ![SEND MAP — spoiler-tagged attachment](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/5.png) |
 
 ---
 
@@ -34,14 +34,14 @@ A second panel appears on the bottom-left of the large map. The intent: walk bet
 
 | Idle — `START COMPILE` / `RESUME COMPILE (N)` | Compiling — `ADD TILE (N)` / `FINISH (N)` / `CANCEL` |
 |---|---|
-| ![Compile panel — idle](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg) | ![Compile panel — adding tiles](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/2.jpg) |
+| ![Compile panel — idle](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg) | ![Compile panel — adding tiles](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/2.jpg) |
 
 - **ADD TILE** is enabled only when the map was opened at a cartography table (no `M`-key adds, no portable map items)
 - Re-adding within ~8m of an existing tile **replaces** that tile in place — re-shoot a table without ending up with duplicates
 - The session is saved to disk after every add, scoped to the current world + character. If you crash or disconnect, click **RESUME COMPILE (N)** the next time you open the map
 - **FINISH** opens the result panel:
 
-![MAP COMPILED result panel — preview + SAVE / COPY / SEND TO DISCORD / DISCARD / DONE](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/7.png)
+![MAP COMPILED result panel — preview + SAVE / COPY / SEND TO DISCORD / DISCARD / DONE](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/7.png)
 
 - **SAVE** writes the PNG to disk; the button then morphs into **COPY DIR** so a second click puts the containing folder on the clipboard
 - **COPY** writes the PNG to the clipboard (CTRL+COPY raises the cap to 4096px, same as **COPY MAP**)
@@ -50,7 +50,7 @@ A second panel appears on the bottom-left of the large map. The intent: walk bet
 
 | Composed PNG (4 tables stitched) | Sent to Discord | Spoiler-tagged |
 |---|---|---|
-| ![Composed map — 4 tiles stitched](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/2.png) | ![Compile — Discord post](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/4.png) | ![Compile — spoiler-tagged Discord post](https://raw.githubusercontent.com/VirtualBjorn/ValheimMods/main/NoMapDiscordAdditions/Thunderstore/Images/3.png) |
+| ![Composed map — 4 tiles stitched](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/2.png) | ![Compile — Discord post](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/4.png) | ![Compile — spoiler-tagged Discord post](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/3.png) |
 
 ---
 

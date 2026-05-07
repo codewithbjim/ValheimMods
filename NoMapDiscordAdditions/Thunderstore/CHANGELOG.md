@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- Repository moved to `github.com/codewithbjim/ValheimMods` — updated `website_url` in the manifest and all README image links to the new host
+
 ## 1.0.4
 
 ### Map Compile (new)
