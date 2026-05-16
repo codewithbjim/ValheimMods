@@ -20,6 +20,19 @@ namespace NoMapDiscordAdditions.MapCompile
         private const string SessionsDirName  = "compile-sessions";
         private const string CompiledOutDirName = "compiled";
 
+        // Tile sharing. Outgoing copies (metadata-embedded PNGs) land in
+        // share/out so the player can also drag them into Discord manually;
+        // teammates drop received PNGs into share/incoming, which is auto-
+        // scanned every time the large map opens during a compile session.
+        // Handled files are moved out of incoming so they aren't reprocessed:
+        // successful imports → incoming/processed, anything we can't use
+        // (not our PNG, or a different world) → incoming/ignored.
+        private const string ShareDirName          = "compile-share";
+        private const string ShareOutDirName       = "out";
+        private const string IncomingDirName       = "incoming";
+        private const string IncomingProcessedName = "processed";
+        private const string IncomingIgnoredName   = "ignored";
+
         private static bool? _zenMapPresent;
 
         // Cached after first call — BepInEx loads plugins exactly once at startup,
@@ -78,6 +91,12 @@ namespace NoMapDiscordAdditions.MapCompile
         public static string ModConfigRoot  => Path.Combine(Paths.ConfigPath, Plugin.PluginName);
         public static string SessionsRoot   => Path.Combine(ModConfigRoot, SessionsDirName);
         public static string CompiledOutDir => Path.Combine(ModConfigRoot, CompiledOutDirName);
+
+        public static string ShareRoot           => Path.Combine(ModConfigRoot, ShareDirName);
+        public static string ShareOutDir         => Path.Combine(ShareRoot, ShareOutDirName);
+        public static string IncomingDir         => Path.Combine(ShareRoot, IncomingDirName);
+        public static string IncomingProcessedDir => Path.Combine(IncomingDir, IncomingProcessedName);
+        public static string IncomingIgnoredDir   => Path.Combine(IncomingDir, IncomingIgnoredName);
 
         public static string GetSessionDir(string sessionKey) =>
             Path.Combine(SessionsRoot, sessionKey);

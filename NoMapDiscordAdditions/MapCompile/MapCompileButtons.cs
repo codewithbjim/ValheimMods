@@ -12,7 +12,7 @@ namespace NoMapDiscordAdditions.MapCompile
     /// at bottom. Layout adapts to the current <see cref="MapCompileSession"/>
     /// state:
     ///   Idle      — single button: "START COMPILE" or "RESUME COMPILE (N)"
-    ///   Compiling — "ADD TILE (N)" (greyed without an active table), "FINISH (N)", "CANCEL"
+    ///   Compiling — "ADD TILE (N)" (greyed without an active table), "COMPILE (N)", "CANCEL"
     ///   Reviewing — hidden (result panel takes over)
     /// </summary>
     public static class MapCompileButtons
@@ -25,10 +25,15 @@ namespace NoMapDiscordAdditions.MapCompile
         private const float HlgSpacing = 8f;
 
         private static GameObject _containerObj;
-        private static Button _btn1, _btn2, _btn3;
-        private static TextMeshProUGUI _btn1Text, _btn2Text, _btn3Text;
+        private static Button _btn1, _btn2, _btn3, _btn4;
+        private static TextMeshProUGUI _btn1Text, _btn2Text, _btn3Text, _btn4Text;
 
         private static bool _composeInProgress;
+
+        // Auto-import the incoming share folder at most once per map-open so a
+        // session stays predictable; closing/reopening the large map pulls in
+        // anything new dropped since. Reset by SetVisible(false).
+        private static bool _autoImportedThisOpen;
 
         public static void Create()
         {
@@ -70,6 +75,8 @@ namespace NoMapDiscordAdditions.MapCompile
                 ActionBtnWidth, BtnHeight, "", out _btn2Text);
             _btn3 = MapUI.CreateButton("CompileBtn3", _containerObj.transform,
                 ActionBtnWidth, BtnHeight, "", out _btn3Text);
+            _btn4 = MapUI.CreateButton("CompileBtn4", _containerObj.transform,
+                ActionBtnWidth, BtnHeight, "", out _btn4Text);
 
             MapCompileSession.StateChanged -= RefreshLayout;
             MapCompileSession.StateChanged += RefreshLayout;
@@ -85,7 +92,32 @@ namespace NoMapDiscordAdditions.MapCompile
             if (_containerObj == null) return;
             bool effective = visible && MapCompileEnvironment.IsAvailable;
             _containerObj.SetActive(effective);
-            if (effective) RefreshLayout();
+            if (effective)
+            {
+                TryAutoImport();
+                RefreshLayout();
+            }
+            if (!visible) _autoImportedThisOpen = false;
+        }
+
+        // Pull any teammate-shared tiles waiting in the incoming folder into
+        // the active session. Only meaningful while Compiling; ScanAndImport
+        // itself no-ops otherwise. Runs once per map-open (see guard).
+        private static void TryAutoImport()
+        {
+            if (_autoImportedThisOpen) return;
+            if (!ModHelpers.EffectiveConfig.EnableCompileMapSharing) return;
+            if (MapCompileSession.CurrentState != MapCompileSession.State.Compiling)
+                return;
+
+            _autoImportedThisOpen = true;
+            int n = MapTileShare.ScanAndImport();
+            if (n > 0)
+            {
+                string word = n == 1 ? "tile" : "tiles";
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    $"Imported {n} shared {word} ({MapCompileSession.Tiles.Count} total).");
+            }
         }
 
         // Pin the container to the bottom-left of the large-map root, mirror
@@ -117,6 +149,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn1.onClick.RemoveAllListeners();
             _btn2.onClick.RemoveAllListeners();
             _btn3.onClick.RemoveAllListeners();
+            _btn4.onClick.RemoveAllListeners();
 
             switch (MapCompileSession.CurrentState)
             {
@@ -127,8 +160,20 @@ namespace NoMapDiscordAdditions.MapCompile
                     LayoutCompiling();
                     break;
                 case MapCompileSession.State.Reviewing:
-                    _containerObj.SetActive(false);
-                    return;
+                    // Result panel up (it takes over the screen) or nothing to
+                    // restore → keep the compile panel hidden.
+                    if (MapCompileResultPanel.IsVisible
+                        || !MapCompileResultPanel.HasPendingResult)
+                    {
+                        _containerObj.SetActive(false);
+                        return;
+                    }
+                    // Map was closed/reopened while reviewing: the result panel
+                    // was torn down but the compiled map is preserved. Don't
+                    // auto-pop it — offer a single RESUME COMPILE button so the
+                    // player chooses when to bring it back.
+                    LayoutResumeReview();
+                    break;
             }
 
             // Re-show the panel in case a previous Reviewing transition deactivated
@@ -145,12 +190,38 @@ namespace NoMapDiscordAdditions.MapCompile
             if (_btn1.gameObject.activeSelf) { w += _btn1.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn2.gameObject.activeSelf) { w += _btn2.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn3.gameObject.activeSelf) { w += _btn3.GetComponent<RectTransform>().sizeDelta.x; active++; }
+            if (_btn4.gameObject.activeSelf) { w += _btn4.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (active > 1) w += (active - 1) * HlgSpacing;
             float h = BtnHeight + HlgPadVertical * 2f;
             var containerRect = _containerObj.GetComponent<RectTransform>();
             containerRect.sizeDelta = new Vector2(w, h);
             // Re-anchor — the bottom-left position depends on halfW.
             ApplyAlignment(containerRect);
+        }
+
+        // Single button shown when a compile was awaiting review but the result
+        // panel was dismissed by closing the map. Clicking it does NOT reopen
+        // the (now stale) result panel — it drops straight back into compile
+        // mode with every tile intact, so the player can keep adding tables and
+        // re-COMPILE when ready. The in-memory compiled PNG is discarded; the
+        // on-disk session is untouched and stays resumable.
+        private static void LayoutResumeReview()
+        {
+            int n = MapCompileSession.Tiles.Count;
+
+            _btn1.gameObject.SetActive(true);
+            _btn1Text.text = $"RESUME COMPILE ({n})";
+            _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(StartBtnWidth, BtnHeight);
+            _btn1.interactable = !_composeInProgress;
+            _btn1.onClick.AddListener(() =>
+            {
+                MapCompileResultPanel.Hide();          // drop the stale compiled PNG
+                MapCompileSession.ReturnToCompiling(); // → StateChanged → LayoutCompiling
+            });
+
+            _btn2.gameObject.SetActive(false);
+            _btn3.gameObject.SetActive(false);
+            _btn4.gameObject.SetActive(false);
         }
 
         private static void LayoutIdle()
@@ -175,10 +246,15 @@ namespace NoMapDiscordAdditions.MapCompile
                 // in AddTile prevents an accidental duplicate when resuming.
                 if (MapCompileSession.CanAddTile)
                     OnAddTileClicked();
+
+                // A freshly started/resumed session immediately absorbs
+                // anything already waiting in the incoming share folder.
+                TryAutoImport();
             });
 
             _btn2.gameObject.SetActive(false);
             _btn3.gameObject.SetActive(false);
+            _btn4.gameObject.SetActive(false);
         }
 
         private static void LayoutCompiling()
@@ -187,7 +263,9 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _btn1.gameObject.SetActive(true);
             _btn1Text.text = MapCompileSession.CanAddTile
-                ? $"ADD TILE ({n})"
+                ? (MapCompileSession.ActiveTableAlreadyAdded
+                    ? $"UPDATE TILE ({n})"
+                    : $"ADD TILE ({n})")
                 : "ADD TILE — go to a table";
             _btn1.GetComponent<RectTransform>().sizeDelta =
                 new Vector2(MapCompileSession.CanAddTile ? ActionBtnWidth : 240f, BtnHeight);
@@ -195,16 +273,43 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn1.onClick.AddListener(OnAddTileClicked);
 
             _btn2.gameObject.SetActive(true);
-            _btn2Text.text = $"FINISH ({n})";
+            _btn2Text.text = $"COMPILE ({n})";
             _btn2.GetComponent<RectTransform>().sizeDelta = new Vector2(ActionBtnWidth, BtnHeight);
             _btn2.interactable = n > 0 && !_composeInProgress;
-            _btn2.onClick.AddListener(OnFinishClicked);
+            _btn2.onClick.AddListener(OnCompileClicked);
 
-            _btn3.gameObject.SetActive(true);
-            _btn3Text.text = "CANCEL";
-            _btn3.GetComponent<RectTransform>().sizeDelta = new Vector2(110f, BtnHeight);
-            _btn3.interactable = !_composeInProgress;
-            _btn3.onClick.AddListener(() => MapCompileSession.Discard());
+            // SHARE: export every tile (incl. previously-imported) as
+            // metadata-embedded PNGs to Discord + the share/out folder.
+            // Hidden entirely when tile sharing is disabled (config /
+            // server-synced) so compile mode stays purely local.
+            bool sharingEnabled = ModHelpers.EffectiveConfig.EnableCompileMapSharing;
+            _btn3.gameObject.SetActive(sharingEnabled);
+            if (sharingEnabled)
+            {
+                bool webhookSet = !string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl);
+                _btn3Text.text = webhookSet ? $"SHARE ({n})" : $"EXPORT ({n})";
+                _btn3.GetComponent<RectTransform>().sizeDelta = new Vector2(ActionBtnWidth, BtnHeight);
+                _btn3.interactable = n > 0 && !_composeInProgress;
+                _btn3.onClick.AddListener(OnShareClicked);
+            }
+
+            _btn4.gameObject.SetActive(true);
+            _btn4Text.text = "CANCEL";
+            _btn4.GetComponent<RectTransform>().sizeDelta = new Vector2(110f, BtnHeight);
+            _btn4.interactable = !_composeInProgress;
+            _btn4.onClick.AddListener(() => MapCompileSession.Suspend());
+        }
+
+        private static void OnShareClicked()
+        {
+            if (_composeInProgress) return;
+            if (MapCompileSession.Tiles.Count == 0)
+            {
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    "No tiles to share.");
+                return;
+            }
+            Plugin.Instance?.ShareCompileTiles();
         }
 
         private static void OnAddTileClicked()
@@ -231,7 +336,8 @@ namespace NoMapDiscordAdditions.MapCompile
             {
                 MapCompileSession.AddTile(
                     result.Png, result.Width, result.Height,
-                    result.WorldMin, result.WorldMax, tablePos);
+                    result.WorldMin, result.WorldMax, tablePos,
+                    result.FullyMapped);
             }
             else
             {
@@ -239,7 +345,7 @@ namespace NoMapDiscordAdditions.MapCompile
             }
         }
 
-        private static void OnFinishClicked()
+        private static void OnCompileClicked()
         {
             if (_composeInProgress) return;
             if (MapCompileSession.Tiles.Count == 0)
@@ -264,6 +370,12 @@ namespace NoMapDiscordAdditions.MapCompile
             var tilesSnapshot = new System.Collections.Generic.List<MapCompileTile>(MapCompileSession.Tiles);
             int maxDim = ModHelpers.EffectiveConfig.CompileMaxDimension;
 
+            // Build the captions on the main thread (SpawnDirection reads
+            // ZoneSystem). Drawn once onto the finished composite rather than
+            // baked per tile — baked captions lose the per-tile chroma-pick in
+            // overlap regions, so only the first-painted tile kept them.
+            var labels = BuildCompileLabels(tilesSnapshot);
+
             MapCompositor.CompiledMap result = null;
             System.Exception error = null;
             var done = new ManualResetEventSlim(false);
@@ -278,11 +390,11 @@ namespace NoMapDiscordAdditions.MapCompile
             });
 
             while (!done.IsSet) yield return null;
-
-            _composeInProgress = false;
+            done.Dispose();
 
             if (error != null)
             {
+                _composeInProgress = false;
                 ModLog.Error($"[NoMapDiscordAdditions] Compose failed: {error}");
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Compile failed.");
                 RefreshLayout();
@@ -290,13 +402,72 @@ namespace NoMapDiscordAdditions.MapCompile
             }
             if (result == null)
             {
+                _composeInProgress = false;
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Compile produced no output.");
+                RefreshLayout();
+                yield break;
+            }
+
+            // Stamp captions (Valheim TMP font, main thread) + encode the PNG.
+            yield return MapCompileLabelStamp.Finalize(result, labels);
+
+            _composeInProgress = false;
+
+            if (result.PngBytes == null)
+            {
+                ModLog.Error("[NoMapDiscordAdditions] Compile encode produced no PNG.");
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Compile failed.");
                 RefreshLayout();
                 yield break;
             }
 
             MapCompileSession.Finish();
             MapCompileResultPanel.Show(result);
+        }
+
+        /// <summary>
+        /// One "{pinName} — {dist}m {dir}" caption per local table for the given
+        /// tiles, gated by the Pin Label config. MUST be called on the main thread —
+        /// <see cref="SpawnDirection.GetLabelForPos"/> reads ZoneSystem.
+        /// Shared by the compose flow and the full-resolution SAVE recompose so
+        /// both stamp identical labels. Imported tiles have no table pos and
+        /// are skipped.
+        /// </summary>
+        internal static System.Collections.Generic.List<MapCompositor.LabelDraw> BuildCompileLabels(
+            System.Collections.Generic.IReadOnlyList<MapCompileTile> tiles)
+        {
+            var labels = new System.Collections.Generic.List<MapCompositor.LabelDraw>();
+            bool wantLabels = ModHelpers.EffectiveConfig.ShowPinLabelOnCompile
+                && ModHelpers.EffectiveConfig.EnableCartographyTableLabels;
+            if (!wantLabels || tiles == null) return labels;
+
+            foreach (var t in tiles)
+            {
+                if (t.IsImported) continue;
+
+                // Same composition as the live-map pin label: the table's pin
+                // name (captured at add time, persisted per tile) prefixes the
+                // spawn-direction caption. Either half may be absent — a named
+                // table near spawn stamps just its name, an unnamed far table
+                // just the direction, neither → no caption.
+                // Clean() (not just Trim) so sessions persisted before the
+                // ZenMap-tracking-suffix fix don't stamp "Name#<guid>".
+                string name = TablePinName.Clean(t.TableName);
+
+                string dir = SpawnDirection.GetLabelForPos(t.TableWorldPos);
+
+                string text =
+                    name != null && dir != null ? $"{name} — {dir}" :
+                    name ?? dir;
+                if (string.IsNullOrEmpty(text)) continue;
+                labels.Add(new MapCompositor.LabelDraw
+                {
+                    WorldX = t.TableWorldPos.x,
+                    WorldZ = t.TableWorldPos.z,
+                    Text = text,
+                });
+            }
+            return labels;
         }
 
         private static int CountSavedTiles()

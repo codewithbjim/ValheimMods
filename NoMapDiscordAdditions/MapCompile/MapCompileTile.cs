@@ -15,10 +15,29 @@ namespace NoMapDiscordAdditions.MapCompile
         public Vector2 WorldMin;       // (X, Z) of the world rect's lower-left
         public Vector2 WorldMax;       // (X, Z) of the world rect's upper-right
         public Vector3 TableWorldPos;  // table the player was at when this was captured
+        // Name of the pin on that table at capture time, or null if unnamed.
+        // Captured here (not re-derived at compose time) because a resumed
+        // session composites tiles whose tables may be far away / unloaded,
+        // with no pin in Minimap.m_pins to look up. Null for older sessions.
+        public string TableName;
         public int PixelWidth;
         public int PixelHeight;
         public string PngPath;
         public long TimestampUnixMs;
+
+        // False when captured over a not-fully-explored area (fog/void within
+        // the world). The compositor demotes partial tiles so their fog never
+        // paints over explored terrain from a complete tile.
+        public bool FullyMapped = true;
+
+        // Set only for tiles brought in from another player's share (via the
+        // incoming folder). Local table captures leave both null. ImportKey is
+        // a stable identity used to dedup re-imports of the same shared tile;
+        // SourcePlayer is the original capturer's name (display only).
+        public string ImportKey;
+        public string SourcePlayer;
+
+        public bool IsImported => ImportKey != null;
 
         public Vector2 WorldSize => WorldMax - WorldMin;
 

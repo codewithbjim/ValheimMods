@@ -7,7 +7,7 @@ namespace NoMapDiscordAdditions
     {
         private const string RpcRequestConfig = "NMDA_RequestConfig";
         private const string RpcReceiveConfig = "NMDA_ReceiveConfig";
-        private const int ProtocolVersion = 8;
+        private const int ProtocolVersion = 11;
 
         private static bool _initialized;
         private static bool _requestedFromServer;
@@ -19,10 +19,14 @@ namespace NoMapDiscordAdditions
         private static bool? _serverEnableCartographyTableLabels;
         private static int? _serverSendMaxDimension;
         private static bool? _serverSpawnLabelIncludeDistance;
+        private static bool? _serverSpawnLabelIncludeDirection;
         private static bool? _serverSpawnLabelIncludeMapItemSources;
         private static int? _serverCompileMaxDimension;
         private static string _serverCompileMessageTemplate;
         private static string _serverMessageTemplate;
+        private static bool? _serverEnableCompileMapSharing;
+        private static string _serverCompileShareMessageTemplate;
+        private static bool? _serverShowPinLabelOnCompile;
         // Stored in memory only — never written to the client's config file.
         private static string _serverWebhookUrl;
 
@@ -47,6 +51,9 @@ namespace NoMapDiscordAdditions
         public static bool EffectiveSpawnLabelIncludeDistance =>
             _serverSpawnLabelIncludeDistance ?? (Plugin.SpawnLabelIncludeDistance?.Value ?? true);
 
+        public static bool EffectiveSpawnLabelIncludeDirection =>
+            _serverSpawnLabelIncludeDirection ?? (Plugin.SpawnLabelIncludeDirection?.Value ?? false);
+
         public static bool EffectiveSpawnLabelIncludeMapItemSources =>
             _serverSpawnLabelIncludeMapItemSources ?? (Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false);
 
@@ -61,7 +68,18 @@ namespace NoMapDiscordAdditions
         public static string EffectiveMessageTemplate =>
             _serverMessageTemplate
             ?? (Plugin.MessageTemplate?.Value
-                ?? "{player} shared a map update from {biome}{spawnDir}");
+                ?? "{player} shared a map update from {biome}{spawnDir}{table}");
+
+        public static bool EffectiveEnableCompileMapSharing =>
+            _serverEnableCompileMapSharing ?? (Plugin.EnableCompileMapSharing?.Value ?? true);
+
+        public static string EffectiveCompileShareMessageTemplate =>
+            _serverCompileShareMessageTemplate
+            ?? (Plugin.CompileShareMessageTemplate?.Value
+                ?? "{player} shared {tileCount} map tile(s) for compile mode.");
+
+        public static bool EffectiveShowPinLabelOnCompile =>
+            _serverShowPinLabelOnCompile ?? (Plugin.ShowPinLabelOnCompile?.Value ?? true);
 
         public static string EffectiveWebhookUrl =>
             !string.IsNullOrEmpty(_serverWebhookUrl) ? _serverWebhookUrl : Plugin.WebhookUrl.Value;
@@ -156,11 +174,15 @@ namespace NoMapDiscordAdditions
             reply.Write(Plugin.EnableCartographyTableLabels?.Value ?? true);
             reply.Write(Plugin.SendMaxDimension?.Value ?? 2560);
             reply.Write(Plugin.SpawnLabelIncludeDistance?.Value ?? true);
+            reply.Write(Plugin.SpawnLabelIncludeDirection?.Value ?? false);
             reply.Write(Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false);
             reply.Write(Plugin.CompileMaxDimension?.Value ?? 2560);
             reply.Write(Plugin.CompileMessageTemplate?.Value ?? "");
             reply.Write(Plugin.MessageTemplate?.Value ?? "");
             reply.Write(Plugin.WebhookUrl.Value ?? "");
+            reply.Write(Plugin.EnableCompileMapSharing?.Value ?? true);
+            reply.Write(Plugin.CompileShareMessageTemplate?.Value ?? "");
+            reply.Write(Plugin.ShowPinLabelOnCompile?.Value ?? true);
 
             ZRoutedRpc.instance.InvokeRoutedRPC(sender, RpcReceiveConfig, reply);
         }
@@ -183,6 +205,7 @@ namespace NoMapDiscordAdditions
                 _serverEnableCartographyTableLabels = pkg.ReadBool();
                 _serverSendMaxDimension = pkg.ReadInt();
                 _serverSpawnLabelIncludeDistance = pkg.ReadBool();
+                _serverSpawnLabelIncludeDirection = pkg.ReadBool();
                 _serverSpawnLabelIncludeMapItemSources = pkg.ReadBool();
                 _serverCompileMaxDimension = pkg.ReadInt();
                 string compileTpl = pkg.ReadString();
@@ -191,6 +214,10 @@ namespace NoMapDiscordAdditions
                 _serverMessageTemplate = string.IsNullOrEmpty(msgTpl) ? null : msgTpl;
                 string url = pkg.ReadString();
                 _serverWebhookUrl = string.IsNullOrEmpty(url) ? null : url;
+                _serverEnableCompileMapSharing = pkg.ReadBool();
+                string shareTpl = pkg.ReadString();
+                _serverCompileShareMessageTemplate = string.IsNullOrEmpty(shareTpl) ? null : shareTpl;
+                _serverShowPinLabelOnCompile = pkg.ReadBool();
 
                 CaptureButton.RefreshEnabledState();
 
@@ -201,11 +228,15 @@ namespace NoMapDiscordAdditions
                     $"EnableCartographyTableLabels={_serverEnableCartographyTableLabels}, " +
                     $"SendMaxDimension={_serverSendMaxDimension}, " +
                     $"SpawnLabelIncludeDistance={_serverSpawnLabelIncludeDistance}, " +
+                    $"SpawnLabelIncludeDirection={_serverSpawnLabelIncludeDirection}, " +
                     $"SpawnLabelIncludeMapItemSources={_serverSpawnLabelIncludeMapItemSources}, " +
                     $"CompileMaxDimension={_serverCompileMaxDimension}, " +
                     $"HasCompileTemplate={_serverCompileMessageTemplate != null}, " +
                     $"HasMessageTemplate={_serverMessageTemplate != null}, " +
-                    $"HasWebhookUrl={_serverWebhookUrl != null}");
+                    $"HasWebhookUrl={_serverWebhookUrl != null}, " +
+                    $"EnableCompileMapSharing={_serverEnableCompileMapSharing}, " +
+                    $"HasShareTemplate={_serverCompileShareMessageTemplate != null}, " +
+                    $"ShowPinLabelOnCompile={_serverShowPinLabelOnCompile}");
             }
             catch (Exception e)
             {

@@ -1,5 +1,8 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -9,12 +12,14 @@ namespace NoMapDiscordAdditions.MapCompile
     /// <summary>
     /// Modal-style overlay shown after a successful Compose. Has a thumbnail
     /// preview and five buttons: COPY, SAVE, SEND TO DISCORD, DISCARD, DONE.
-    /// The SAVE button morphs into COPY DIR after the first successful save —
-    /// at that point the file is on disk and the useful next action is
-    /// putting its containing folder on the clipboard so the player can paste
-    /// into Explorer. COPY/SAVE/COPY DIR/SEND are non-destructive. DONE and
-    /// DISCARD both end the review and wipe the on-disk session directory;
-    /// DISCARD additionally throws away the in-memory PNG (no save).
+    /// SAVE recomposes at full native per-tile resolution (the preview/COPY/SEND
+    /// payload stays at the Discord-safe capped size) and writes that PNG to the
+    /// compiled/ folder, then morphs into COPY DIR so the next click puts the
+    /// containing folder on the clipboard. COPY/SAVE/COPY DIR/SEND/DONE are all
+    /// non-destructive — the compile session survives them and stays resumable
+    /// at the next table or after a restart. Only DISCARD wipes the on-disk
+    /// session (and also throws away the in-memory PNG). DONE just drops back
+    /// to compile mode so the player can keep adding tiles.
     /// </summary>
     public static class MapCompileResultPanel
     {
@@ -31,6 +36,14 @@ namespace NoMapDiscordAdditions.MapCompile
         private static TextMeshProUGUI _saveBtnText;
 
         public static bool IsVisible => _containerObj != null && _containerObj.activeSelf;
+
+        /// <summary>
+        /// True while a compiled map is awaiting the player's decision, even if
+        /// the panel UI was torn down because the large map closed. The map
+        /// re-open path uses this to rebuild the panel instead of stranding the
+        /// session in Reviewing with no UI.
+        /// </summary>
+        public static bool HasPendingResult => _result != null;
 
         public static void Show(MapCompositor.CompiledMap result)
         {
@@ -149,6 +162,25 @@ namespace NoMapDiscordAdditions.MapCompile
             _statusText = null;
             _saveBtnText = null;
             _savedFilePath = null;
+            _saveInProgress = false;
+        }
+
+        /// <summary>
+        /// Tear down the panel UI but keep the compiled result so the session
+        /// stays coherently in Reviewing (HasPendingResult). Called when the
+        /// large map closes while the player is still reviewing — a plain
+        /// <see cref="Hide"/> there would leave the session in Reviewing with no
+        /// panel and no button. On the next map open the compile panel shows a
+        /// RESUME COMPILE button which drops back into compile mode (the stale
+        /// PNG is discarded then — the panel is never auto-rebuilt).
+        /// </summary>
+        public static void HideKeepingResult()
+        {
+            var keepResult = _result;
+            var keepPath = _savedFilePath;
+            Hide();
+            _result = keepResult;
+            _savedFilePath = keepPath;
         }
 
         // ── Action handlers ──────────────────────────────────────────────────
@@ -158,6 +190,10 @@ namespace NoMapDiscordAdditions.MapCompile
         // DIR state (button copies the containing folder to the clipboard).
         // Cleared on Hide.
         private static string _savedFilePath;
+
+        // Guards against a second SAVE click while the full-resolution recompose
+        // coroutine is still running (it can take a few seconds).
+        private static bool _saveInProgress;
 
         private static void OnCopy()
         {
@@ -183,29 +219,100 @@ namespace NoMapDiscordAdditions.MapCompile
             else                        DoCopyDir();
         }
 
+        // SAVE deliberately does NOT reuse _result.PngBytes (that's the
+        // Discord-safe capped compose used for the preview/COPY/SEND). It
+        // recomposes from the on-disk tiles at full native per-tile resolution
+        // so the saved PNG is zoom/edit quality. The recompose is System.Drawing
+        // heavy, so it runs off the main thread via a coroutine like the
+        // original compile.
         private static void DoSave()
         {
-            if (_result == null) return;
+            if (_result == null || _saveInProgress) return;
+            var plugin = Plugin.Instance;
+            if (plugin == null) return;
+            plugin.StartCoroutine(SaveFullResCoroutine());
+        }
+
+        private static IEnumerator SaveFullResCoroutine()
+        {
+            _saveInProgress = true;
+            SetStatus("Saving full-resolution map…");
+
+            // Capture _result up front — DISCARD/DONE clicked mid-save calls
+            // Hide() which nulls it, and we dereference it after the yields.
+            var result = _result;
+            if (result == null) { _saveInProgress = false; yield break; }
+
+            // Tiles are stable while Reviewing (AddTile requires Compiling), but
+            // snapshot anyway. Labels MUST be built on the main thread.
+            var tiles = new List<MapCompileTile>(MapCompileSession.Tiles);
+            var labels = MapCompileButtons.BuildCompileLabels(tiles);
+
+            MapCompositor.CompiledMap full = null;
+            Exception error = null;
+
+            if (tiles.Count > 0)
+            {
+                var done = new ManualResetEventSlim(false);
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try { full = MapCompositor.ComposeNative(tiles); }
+                    catch (Exception ex) { error = ex; }
+                    finally { done.Set(); }
+                });
+                while (!done.IsSet) yield return null;
+                done.Dispose();
+
+                // Stamp captions (Valheim TMP font, main thread) + encode.
+                if (error == null && full != null)
+                {
+                    yield return MapCompileLabelStamp.Finalize(full, labels);
+                    if (full.PngBytes == null)
+                        error = new Exception("full-res encode produced no PNG");
+                }
+            }
+
+            // Fall back to the already-composed capped PNG if the native
+            // recompose produced nothing (no tiles / degenerate / error) so
+            // SAVE still writes *something* rather than silently failing.
+            byte[] bytes;
+            int w, h;
+            bool clamped;
+            if (error == null && full != null)
+            {
+                bytes = full.PngBytes; w = full.Width; h = full.Height; clamped = full.WasClamped;
+            }
+            else
+            {
+                if (error != null)
+                    ModLog.Error($"[NoMapDiscordAdditions] Full-res recompose failed: {error.Message}");
+                bytes = result.PngBytes; w = result.Width; h = result.Height; clamped = true;
+            }
+
             try
             {
                 MapCompileEnvironment.EnsureDirectory(MapCompileEnvironment.CompiledOutDir);
                 string ts = DateTime.Now.ToString("yyyyMMdd-HHmmss");
                 string playerName = Sanitize(Player.m_localPlayer?.GetPlayerName() ?? "player");
-                string fileName = $"{playerName}_compiled_{_result.TileCount}tiles_{ts}.png";
+                string fileName = $"{playerName}_compiled_{result.TileCount}tiles_{w}x{h}_{ts}.png";
                 _savedFilePath = Path.Combine(MapCompileEnvironment.CompiledOutDir, fileName);
-                File.WriteAllBytes(_savedFilePath, _result.PngBytes);
+                File.WriteAllBytes(_savedFilePath, bytes);
 
                 // Morph SAVE → COPY DIR now that the file's on disk.
                 if (_saveBtnText != null) _saveBtnText.text = "COPY DIR";
 
-                SetStatus($"Saved to {SanitizePathForDisplay(_savedFilePath)}");
-                Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Compiled map saved.");
+                string res = clamped ? "downscaled to fit 8192" : "native resolution";
+                SetStatus($"Saved {w}×{h}px ({res}) to {SanitizePathForDisplay(_savedFilePath)}");
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    $"Compiled map saved ({w}×{h}).");
             }
             catch (Exception ex)
             {
                 ModLog.Error($"[NoMapDiscordAdditions] Save failed: {ex.Message}");
                 SetStatus("Save failed — see log.");
             }
+
+            _saveInProgress = false;
         }
 
         private static void DoCopyDir()
@@ -250,11 +357,12 @@ namespace NoMapDiscordAdditions.MapCompile
 
         private static void OnDone()
         {
-            // Player has already saved/copied/sent — clean up the disk session
-            // and dismiss. The compiled PNG itself is gone from memory; if the
-            // player needs it again, they can re-open from the saved file.
+            // Non-destructive: the player saved/copied/sent (or just wants to
+            // keep mapping). Drop the panel and return to compile mode with
+            // every tile intact — they can add more at the next table, or
+            // close the game and RESUME later. Nothing on disk is wiped.
             Hide();
-            MapCompileSession.EndReview();
+            MapCompileSession.ReturnToCompiling();
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────
@@ -262,6 +370,9 @@ namespace NoMapDiscordAdditions.MapCompile
         private static TextMeshProUGUI CreateLabel(string text, float size)
         {
             var obj = new GameObject("Label");
+            // Inactive until the font is assigned so TMP's Awake doesn't log
+            // the missing "LiberationSans SDF" default-font warning.
+            obj.SetActive(false);
             obj.transform.SetParent(_containerObj.transform, false);
             var rt = obj.AddComponent<RectTransform>();
             var tmp = obj.AddComponent<TextMeshProUGUI>();
@@ -274,6 +385,7 @@ namespace NoMapDiscordAdditions.MapCompile
             tmp.color = MapUI.LabelColor;
             // Sized to fit the text plus a bit of padding so the layout group doesn't clip it.
             rt.sizeDelta = new Vector2(360f, size + 8f);
+            obj.SetActive(true);
             return tmp;
         }
 

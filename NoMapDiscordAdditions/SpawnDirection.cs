@@ -23,6 +23,12 @@ namespace NoMapDiscordAdditions
         public static Vector3? ActivePos { get; private set; }
         public static Source ActiveSource { get; private set; } = Source.None;
 
+        // Name of the pin sitting on the active cartography table (resolved once
+        // at SetActiveTable time — pins don't move, so no need to re-query per
+        // frame). Null when the source is a map item, or no named pin is on the
+        // table. See <see cref="TablePinName"/>.
+        public static string ActiveTableName { get; private set; }
+
         // Cartography table read. Always wins over a prior MapItem set in the same
         // frame — ShowPointOnMap (postfix runs first via ZenMap's Show()) marks it
         // as MapItem briefly, then this overrides to Table when OnRead's postfix runs.
@@ -30,8 +36,15 @@ namespace NoMapDiscordAdditions
         {
             ActivePos = worldPos;
             ActiveSource = Source.CartographyTable;
-            ModLog.Info($"[NoMapDiscordAdditions] SpawnDirection: active TABLE at ({worldPos.x:F1}, {worldPos.z:F1}).");
+            ActiveTableName = TablePinName.Resolve(worldPos);
+            ModLog.Info($"[NoMapDiscordAdditions] SpawnDirection: active TABLE at ({worldPos.x:F1}, {worldPos.z:F1})"
+                + (ActiveTableName != null ? $" \"{ActiveTableName}\"." : "."));
         }
+
+        // Last position we actually logged an ITEM set for, so the per-event
+        // ShowPointOnMap postfix (which can fire many times per second) doesn't
+        // flood the log when EnableLogs is on. Reset by Clear().
+        private static Vector3? _loggedItemPos;
 
         // Portable map item (ZenMap parchment etc.). Only sets the source if it's
         // not already a Table — prevents overriding a fresh OnRead set in the same frame.
@@ -40,7 +53,13 @@ namespace NoMapDiscordAdditions
             if (ActiveSource == Source.CartographyTable) return;
             ActivePos = worldPos;
             ActiveSource = Source.MapItem;
-            ModLog.Info($"[NoMapDiscordAdditions] SpawnDirection: active ITEM at ({worldPos.x:F1}, {worldPos.z:F1}).");
+            ActiveTableName = null; // map items have no table pin
+            if (_loggedItemPos == null ||
+                (_loggedItemPos.Value - worldPos).sqrMagnitude > 1f)
+            {
+                _loggedItemPos = worldPos;
+                ModLog.Info($"[NoMapDiscordAdditions] SpawnDirection: active ITEM at ({worldPos.x:F1}, {worldPos.z:F1}).");
+            }
         }
 
         public static void Clear()
@@ -49,6 +68,8 @@ namespace NoMapDiscordAdditions
                 ModLog.Info("[NoMapDiscordAdditions] SpawnDirection: cleared.");
             ActivePos = null;
             ActiveSource = Source.None;
+            ActiveTableName = null;
+            _loggedItemPos = null;
         }
 
         // Label for the currently-active source position. Honors source gating.
@@ -85,6 +106,17 @@ namespace NoMapDiscordAdditions
             return GetLabelForPos(pos);
         }
 
+        // Name of the active cartography table's pin, or null when the feature
+        // is disabled (server-authoritative when ServerSync is loaded), the
+        // source is a map item, or no named pin sits on the table. Gated by the
+        // same master switch as GetLabel so server policy stays consistent
+        // across the {table} chat placeholder and the in-image pin labels.
+        public static string GetTableName()
+        {
+            if (!ModHelpers.EffectiveConfig.EnableCartographyTableLabels) return null;
+            return ActiveTableName;
+        }
+
         // Label for an arbitrary world position. Used by per-pin labelers that
         // need to compute distance/direction for many pins each frame, not just
         // the active source. Returns null when the point is within MinDistance
@@ -98,21 +130,31 @@ namespace NoMapDiscordAdditions
             float distSq = dx * dx + dz * dz;
             if (distSq <= MinDistance * MinDistance) return null;
 
-            float dist = Mathf.Sqrt(distSq);
-            float angle = Mathf.Atan2(dx, dz) * Mathf.Rad2Deg; // N=0, E=90, S=180, W=270
-            if (angle < 0f) angle += 360f;
-
-            string dir = AngleToDirection(angle);
-            // Compass bearing in parens — precise direction alongside the
-            // human-readable cardinal. 360° normalizes to 0° so North reads
-            // consistently.
-            int bearing = Mathf.RoundToInt(angle) % 360;
-            string dirWithBearing = $"{dir} ({bearing}°)";
-
             bool includeDist = ModHelpers.EffectiveConfig.SpawnLabelIncludeDistance;
-            return includeDist
-                ? $"{Mathf.RoundToInt(dist)}m {dirWithBearing}"
-                : dirWithBearing;
+            bool includeDir = ModHelpers.EffectiveConfig.SpawnLabelIncludeDirection;
+
+            // Both parts opted out → nothing meaningful to draw.
+            if (!includeDist && !includeDir) return null;
+
+            string distPart = includeDist
+                ? $"{Mathf.RoundToInt(Mathf.Sqrt(distSq))}m"
+                : null;
+
+            string dirPart = null;
+            if (includeDir)
+            {
+                float angle = Mathf.Atan2(dx, dz) * Mathf.Rad2Deg; // N=0, E=90, S=180, W=270
+                if (angle < 0f) angle += 360f;
+
+                // Compass bearing in parens — precise direction alongside the
+                // human-readable cardinal. 360° normalizes to 0° so North reads
+                // consistently.
+                int bearing = Mathf.RoundToInt(angle) % 360;
+                dirPart = $"{AngleToDirection(angle)} ({bearing}°)";
+            }
+
+            if (distPart != null && dirPart != null) return $"{distPart} {dirPart}";
+            return distPart ?? dirPart;
         }
 
         private static Vector3 GetSpawnPos()

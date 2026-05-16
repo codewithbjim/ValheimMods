@@ -55,6 +55,17 @@ namespace NoMapDiscordAdditions.MapCompile
         public static bool CanAddTile =>
             CurrentState == State.Compiling && ActiveTablePos != null;
 
+        /// <summary>
+        /// True while standing at a table whose position already matches an
+        /// existing (non-imported) tile within <see cref="DedupRadius"/> — i.e.
+        /// clicking ADD TILE will replace that tile in place rather than append
+        /// a new one. Lets the UI label the button "UPDATE TILE" instead of
+        /// "ADD TILE", which matters most on a resumed session where the tiles
+        /// were loaded from disk.
+        /// </summary>
+        public static bool ActiveTableAlreadyAdded =>
+            CanAddTile && FindTileNearTable(ActiveTablePos.Value) >= 0;
+
         // ─── Resume detection ────────────────────────────────────────────────
 
         /// <summary>
@@ -130,7 +141,8 @@ namespace NoMapDiscordAdditions.MapCompile
         /// Re-adding from the same table replaces in place rather than appending.
         /// </summary>
         public static void AddTile(byte[] pngBytes, int width, int height,
-            Vector2 worldMin, Vector2 worldMax, Vector3 tablePos)
+            Vector2 worldMin, Vector2 worldMax, Vector3 tablePos,
+            bool fullyMapped = true)
         {
             if (CurrentState != State.Compiling) return;
             if (pngBytes == null || pngBytes.Length == 0) return;
@@ -164,24 +176,91 @@ namespace NoMapDiscordAdditions.MapCompile
                 WorldMin = worldMin,
                 WorldMax = worldMax,
                 TableWorldPos = tablePos,
+                TableName = TablePinName.Resolve(tablePos),
                 PixelWidth = width,
                 PixelHeight = height,
                 PngPath = pngPath,
                 TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                FullyMapped = fullyMapped,
             };
             _tiles.Add(tile);
             SaveIndex();
             StateChanged?.Invoke();
 
+            string verb = existing >= 0 ? "updated" : "added";
+            string partial = fullyMapped ? "" : " — partial map";
             Player.m_localPlayer?.Message(
                 MessageHud.MessageType.Center,
-                existing >= 0 ? $"Tile updated ({_tiles.Count} total)"
-                              : $"Tile added ({_tiles.Count} total)");
+                $"Tile {verb} ({_tiles.Count} total){partial}");
         }
 
         /// <summary>
-        /// Move from Compiling to Reviewing. Tile data is preserved on disk
-        /// until the result panel completes (Save / Copy / Send / Discard / Done).
+        /// Adds (or replaces) a tile received from another player's share.
+        /// Unlike <see cref="AddTile"/> this dedups by <paramref name="importKey"/>
+        /// (stable per shared tile) rather than by table position, so the same
+        /// shared tile re-appearing in the incoming folder updates in place
+        /// instead of stacking. Returns true if a session was active and the
+        /// tile was stored.
+        /// </summary>
+        public static bool AddImportedTile(byte[] pngBytes, int width, int height,
+            Vector2 worldMin, Vector2 worldMax, string importKey, string sourcePlayer,
+            bool fullyMapped = true)
+        {
+            if (CurrentState != State.Compiling) return false;
+            if (pngBytes == null || pngBytes.Length == 0) return false;
+            if (string.IsNullOrEmpty(importKey)) return false;
+            if (string.IsNullOrEmpty(_sessionDir)) return false;
+
+            int existing = FindTileByImportKey(importKey);
+            int index;
+            if (existing >= 0)
+            {
+                index = _tiles[existing].Index;
+                _tiles.RemoveAt(existing);
+            }
+            else
+            {
+                index = NextTileIndex();
+            }
+
+            string pngPath = MapCompileEnvironment.GetTileFile(_sessionDir, index);
+            try
+            {
+                File.WriteAllBytes(pngPath, pngBytes);
+            }
+            catch (Exception ex)
+            {
+                ModLog.Error($"[NoMapDiscordAdditions] Imported tile write failed: {ex.Message}");
+                return false;
+            }
+
+            // TableWorldPos is irrelevant for imported tiles; a far sentinel
+            // keeps FindTileNearTable's distance check from ever matching it
+            // (it also filters IsImported, this is belt-and-braces).
+            _tiles.Add(new MapCompileTile
+            {
+                Index = index,
+                WorldMin = worldMin,
+                WorldMax = worldMax,
+                TableWorldPos = new Vector3(1e9f, 0f, 1e9f),
+                PixelWidth = width,
+                PixelHeight = height,
+                PngPath = pngPath,
+                TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                FullyMapped = fullyMapped,
+                ImportKey = importKey,
+                SourcePlayer = string.IsNullOrEmpty(sourcePlayer) ? "unknown" : sourcePlayer,
+            });
+            SaveIndex();
+            StateChanged?.Invoke();
+            return true;
+        }
+
+        /// <summary>
+        /// Move from Compiling to Reviewing. Tile data is preserved on disk and
+        /// survives Save / Copy / Send / Done / Cancel — only the explicit
+        /// DISCARD action in the result panel ever wipes it, so the session can
+        /// be resumed at any later table or after a game restart.
         /// </summary>
         public static void Finish()
         {
@@ -195,7 +274,33 @@ namespace NoMapDiscordAdditions.MapCompile
             StateChanged?.Invoke();
         }
 
-        /// <summary>Discard everything (Cancel button + Discard action).</summary>
+        /// <summary>
+        /// Exit compile mode without destroying anything. Tiles stay on disk so
+        /// the player can RESUME later — at the next table or after a game
+        /// restart. This is what the CANCEL button does. If the session has no
+        /// tiles there is nothing worth resuming, so the empty session folder is
+        /// cleaned up like a Discard to avoid a phantom "RESUME COMPILE (0)".
+        /// </summary>
+        public static void Suspend()
+        {
+            if (CurrentState == State.Idle) return;
+
+            if (_tiles.Count == 0)
+            {
+                Discard();
+                return;
+            }
+
+            _tiles.Clear();
+            _sessionKey = null;
+            _sessionDir = null;
+            CurrentState = State.Idle;
+            StateChanged?.Invoke();
+            Player.m_localPlayer?.Message(
+                MessageHud.MessageType.Center, "Compile session saved — resume any time.");
+        }
+
+        /// <summary>Discard everything (explicit DISCARD action in result panel).</summary>
         public static void Discard()
         {
             _tiles.Clear();
@@ -214,12 +319,19 @@ namespace NoMapDiscordAdditions.MapCompile
             StateChanged?.Invoke();
         }
 
-        /// <summary>"Done" in the result panel — same cleanup as Discard but the
-        /// player has already saved/copied/sent so it's not really a discard.</summary>
-        public static void EndReview()
+        /// <summary>
+        /// "Done" in the result panel. The player has saved/copied/sent (or just
+        /// wants to keep mapping); drop back to Compiling with every tile still
+        /// in memory and on disk. The player can add more tiles at the next
+        /// table, or close the game and RESUME later — nothing is wiped here.
+        /// </summary>
+        public static void ReturnToCompiling()
         {
             if (CurrentState != State.Reviewing) return;
-            Discard();
+            CurrentState = State.Compiling;
+            StateChanged?.Invoke();
+            Player.m_localPlayer?.Message(
+                MessageHud.MessageType.Center, "Compile session kept — resume any time.");
         }
 
         // ─── Internal helpers ────────────────────────────────────────────────
@@ -232,11 +344,19 @@ namespace NoMapDiscordAdditions.MapCompile
             return max + 1;
         }
 
+        private static int FindTileByImportKey(string importKey)
+        {
+            for (int i = 0; i < _tiles.Count; i++)
+                if (_tiles[i].ImportKey == importKey) return i;
+            return -1;
+        }
+
         private static int FindTileNearTable(Vector3 tablePos)
         {
             for (int i = 0; i < _tiles.Count; i++)
             {
                 var t = _tiles[i];
+                if (t.IsImported) continue; // imported tiles dedup by key, not position
                 float dx = t.TableWorldPos.x - tablePos.x;
                 float dz = t.TableWorldPos.z - tablePos.z;
                 if (dx * dx + dz * dz <= DedupRadius * DedupRadius)
@@ -265,9 +385,19 @@ namespace NoMapDiscordAdditions.MapCompile
             public float[] WorldMin;
             public float[] WorldMax;
             public float[] TablePos;
+            // NullValueHandling.Ignore keeps this out of the JSON for unnamed
+            // tables, so sessions written by older builds load unchanged.
+            public string TableName;
             public int PixelW;
             public int PixelH;
             public long TimestampMs;
+            // true when absent (older sessions) → loaded as a complete tile.
+            public bool FullyMapped = true;
+            // Present only for imported tiles. NullValueHandling.Ignore keeps
+            // them out of the JSON for ordinary table captures, so sessions
+            // written by older builds load unchanged.
+            public string ImportKey;
+            public string Src;
         }
 
         private static readonly JsonSerializerSettings _jsonSettings = new JsonSerializerSettings
@@ -292,9 +422,13 @@ namespace NoMapDiscordAdditions.MapCompile
                     WorldMin = new[] { t.WorldMin.x, t.WorldMin.y },
                     WorldMax = new[] { t.WorldMax.x, t.WorldMax.y },
                     TablePos = new[] { t.TableWorldPos.x, t.TableWorldPos.y, t.TableWorldPos.z },
+                    TableName = t.TableName,
                     PixelW = t.PixelWidth,
                     PixelH = t.PixelHeight,
                     TimestampMs = t.TimestampUnixMs,
+                    FullyMapped = t.FullyMapped,
+                    ImportKey = t.ImportKey,
+                    Src = t.SourcePlayer,
                 });
             }
 
@@ -341,10 +475,14 @@ namespace NoMapDiscordAdditions.MapCompile
                     WorldMin = new Vector2(d.WorldMin[0], d.WorldMin[1]),
                     WorldMax = new Vector2(d.WorldMax[0], d.WorldMax[1]),
                     TableWorldPos = new Vector3(d.TablePos[0], d.TablePos[1], d.TablePos[2]),
+                    TableName = d.TableName,
                     PixelWidth = d.PixelW,
                     PixelHeight = d.PixelH,
                     PngPath = pngPath,
                     TimestampUnixMs = d.TimestampMs,
+                    FullyMapped = d.FullyMapped,
+                    ImportKey = d.ImportKey,
+                    SourcePlayer = d.Src,
                 });
             }
         }

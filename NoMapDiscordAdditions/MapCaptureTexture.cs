@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -38,15 +39,26 @@ namespace NoMapDiscordAdditions
         /// default 1920×1080 output. Synchronous — does not require yielding
         /// to end-of-frame.
         /// </summary>
-        public static byte[] CaptureMap() => CaptureMap(OutputWidth, OutputHeight);
+        public static byte[] CaptureMap() => CaptureMap(OutputWidth, OutputHeight, true);
+
+        /// <summary>
+        /// Default-resolution capture, with explicit control over whether the
+        /// per-pin "of Spawn" captions are baked in. Compile mode uses this so
+        /// the labels can be gated by its own config independently of plain
+        /// COPY/SEND captures.
+        /// </summary>
+        public static byte[] CaptureMap(bool includePinLabels) =>
+            CaptureMap(OutputWidth, OutputHeight, includePinLabels);
 
         /// <summary>
         /// Captures the visible large map at a custom output resolution.
         /// The shader runs at <paramref name="outputWidth"/> × <paramref name="outputHeight"/>
         /// fragments and pin sprites are rasterized in CPU at the same scale,
         /// so output is sharp regardless of zoom or input map size.
+        /// <paramref name="includePinLabels"/> gates the TMP caption pass.
         /// </summary>
-        public static byte[] CaptureMap(int outputWidth, int outputHeight)
+        public static byte[] CaptureMap(int outputWidth, int outputHeight,
+            bool includePinLabels = true)
         {
             if (outputWidth < 64 || outputHeight < 64)
             {
@@ -115,6 +127,15 @@ namespace NoMapDiscordAdditions
             // ── CPU pass: pins + markers on top of the readback ───────────────
             try
             {
+                // Activate the per-pin "of Spawn" captions so they bake into
+                // the output, same as the screen-capture path does. Without
+                // this the texture path (used by compile mode) never showed
+                // them even with the label config enabled. Hidden again in
+                // the finally below. Compile mode passes includePinLabels=false
+                // to opt out via its own "Show on Compile Mode" config.
+                if (includePinLabels)
+                    TablePinLabel.ShowForCapture();
+
                 if (pinRoot != null)
                     BlitUIChildren(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, pinRoot);
 
@@ -131,6 +152,7 @@ namespace NoMapDiscordAdditions
             }
             finally
             {
+                TablePinLabel.HideAll();
                 // Drop atlas references so unloaded textures can be GC'd.
                 _atlasCache.Clear();
             }
@@ -155,6 +177,13 @@ namespace NoMapDiscordAdditions
             List<ModHelpers.SavedShaderProp> savedClouds = null;
             Texture savedMainTex = null;
             bool hasMainTex = mat != null && mat.HasProperty("_MainTex");
+
+            // Normalize time-of-day lighting so tiles captured at any hour
+            // composite without brightness seams (globals restored in finally).
+            bool normalizeLighting = Plugin.NormalizeCaptureLighting?.Value ?? true;
+            ModHelpers.SavedLighting savedLighting = default;
+            if (normalizeLighting)
+                savedLighting = ModHelpers.OverrideLightingToNoon();
 
             if (ModHelpers.EffectiveConfig.HideClouds && mat != null)
                 savedClouds = ModHelpers.SuppressShaderPropsContaining(mat, "cloud");
@@ -199,6 +228,7 @@ namespace NoMapDiscordAdditions
                 if (hasMainTex && savedMainTex != null)
                     mat.SetTexture("_MainTex", savedMainTex);
                 if (savedClouds != null) ModHelpers.RestoreShaderProps(mat, savedClouds);
+                ModHelpers.RestoreLighting(savedLighting);
             }
         }
 
@@ -235,6 +265,13 @@ namespace NoMapDiscordAdditions
                 var img = child.GetComponent<Image>();
                 if (img != null && img.enabled && img.sprite != null)
                     BlitImage(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, rt, img);
+
+                // TMP captions (the per-pin "of Spawn" labels) aren't Images,
+                // so the sprite blit above never sees them — rasterize their
+                // glyphs from the font atlas here.
+                var tmp = child.GetComponent<TMP_Text>();
+                if (tmp != null && tmp.enabled && !string.IsNullOrEmpty(tmp.text))
+                    BlitText(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, tmp);
 
                 // Recurse — pin GameObjects sometimes nest icons under a wrapper.
                 if (child.childCount > 0)
@@ -348,6 +385,127 @@ namespace NoMapDiscordAdditions
         }
 
         // ═══════════════════════════════════════════════════════════════════
+        //  TMP text — rasterize glyphs from the font atlas (SDF aware)
+        // ═══════════════════════════════════════════════════════════════════
+
+        // Software-render a TMP_Text by walking its generated character mesh.
+        // Each glyph quad is mapped from the text RectTransform (screen-pixel
+        // space, Screen Space Overlay) into the output buffer the same way
+        // BlitImage maps sprites, then sampled out of the font atlas. Valheim's
+        // TMP fonts are SDF, so the sampled value is a signed distance — we
+        // threshold around the 0.5 edge with a small soft band for mild AA.
+        // forceMeshUpdate=false skips the (expensive) TMP mesh rebuild — only
+        // safe when the caller guarantees the text/size/color/font are
+        // unchanged since the last update and only the RectTransform moved
+        // (glyph positions are read live via TransformPoint, so a move alone
+        // needs no rebuild). The compile label stamp exploits this to do one
+        // rebuild per outline pass instead of one per offset.
+        private static void BlitText(Color32[] output,
+            int outputWidth, int outputHeight,
+            float mapMinX, float mapMinY, float mapW, float mapH,
+            TMP_Text tmp, bool forceMeshUpdate = true)
+        {
+            if (forceMeshUpdate) tmp.ForceMeshUpdate();
+            var info = tmp.textInfo;
+            if (info == null || info.characterCount == 0) return;
+
+            var rt = tmp.rectTransform;
+            float scaleX = outputWidth / mapW;
+            float scaleY = outputHeight / mapH;
+
+            for (int ci = 0; ci < info.characterCount; ci++)
+            {
+                var ch = info.characterInfo[ci];
+                if (!ch.isVisible) continue;
+
+                Texture2D atlas = (ch.material != null ? ch.material.mainTexture : null) as Texture2D;
+                if (atlas == null && ch.fontAsset != null) atlas = ch.fontAsset.atlasTexture;
+                if (atlas == null) continue;
+
+                Color32[] atlasPixels = GetCachedAtlasPixels(atlas);
+                if (atlasPixels == null) continue;
+                int atlasW = atlas.width;
+                int atlasH = atlas.height;
+
+                // Glyph quad → world (screen px for an overlay canvas) → output px.
+                Vector3 blW = rt.TransformPoint(ch.vertex_BL.position);
+                Vector3 trW = rt.TransformPoint(ch.vertex_TR.position);
+
+                float ox0 = ((blW.x - mapMinX) / mapW) * outputWidth;
+                float ox1 = ((trW.x - mapMinX) / mapW) * outputWidth;
+                float oy0 = ((blW.y - mapMinY) / mapH) * outputHeight;
+                float oy1 = ((trW.y - mapMinY) / mapH) * outputHeight;
+
+                int px0 = Mathf.FloorToInt(Mathf.Min(ox0, ox1));
+                int px1 = Mathf.CeilToInt(Mathf.Max(ox0, ox1));
+                int py0 = Mathf.FloorToInt(Mathf.Min(oy0, oy1));
+                int py1 = Mathf.CeilToInt(Mathf.Max(oy0, oy1));
+                if (px1 <= px0 || py1 <= py0) continue;
+                if (px1 < 0 || px0 >= outputWidth || py1 < 0 || py0 >= outputHeight) continue;
+
+                // Atlas UV span for this glyph (uv.xy; y origin bottom, matching
+                // Texture2D.GetPixels32 row order).
+                Vector4 uvBL = ch.vertex_BL.uv;
+                Vector4 uvTR = ch.vertex_TR.uv;
+                float uMin = uvBL.x, uMax = uvTR.x;
+                float vMin = uvBL.y, vMax = uvTR.y;
+
+                Color32 col = ch.color;
+                if (col.a == 0) col = tmp.color;
+
+                float invW = 1f / (ox1 - ox0);
+                float invH = 1f / (oy1 - oy0);
+
+                for (int py = Mathf.Max(py0, 0); py < Mathf.Min(py1, outputHeight); py++)
+                {
+                    float t = (py + 0.5f - oy0) * invH;     // 0 at BL.y → 1 at TR.y
+                    float v = Mathf.Lerp(vMin, vMax, Mathf.Clamp01(t));
+                    int ay = Mathf.Clamp((int)(v * atlasH), 0, atlasH - 1);
+                    int atlasRow = ay * atlasW;
+                    int dstRow = py * outputWidth;
+
+                    for (int px = Mathf.Max(px0, 0); px < Mathf.Min(px1, outputWidth); px++)
+                    {
+                        float s = (px + 0.5f - ox0) * invW;
+                        float u = Mathf.Lerp(uMin, uMax, Mathf.Clamp01(s));
+                        int ax = Mathf.Clamp((int)(u * atlasW), 0, atlasW - 1);
+
+                        Color32 sp = atlasPixels[atlasRow + ax];
+                        // Robust across Alpha8 / SDF-in-alpha / luminance atlases.
+                        int dv = sp.a;
+                        if (sp.r > dv) dv = sp.r;
+                        if (sp.g > dv) dv = sp.g;
+                        if (sp.b > dv) dv = sp.b;
+                        float d = dv / 255f;
+
+                        // SDF edge ≈ 0.5; small band gives soft (not jaggy) edges.
+                        float cov = Mathf.Clamp01((d - 0.46f) / 0.08f);
+                        if (cov <= 0f) continue;
+
+                        int sa = (int)(cov * col.a);
+                        if (sa <= 0) continue;
+
+                        int di = dstRow + px;
+                        Color32 dst = output[di];
+                        if (sa >= 255)
+                        {
+                            output[di] = new Color32(col.r, col.g, col.b, 255);
+                        }
+                        else
+                        {
+                            int ia = 255 - sa;
+                            output[di] = new Color32(
+                                (byte)((col.r * sa + dst.r * ia) / 255),
+                                (byte)((col.g * sa + dst.g * ia) / 255),
+                                (byte)((col.b * sa + dst.b * ia) / 255),
+                                255);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
         //  Texture sampling helpers
         // ═══════════════════════════════════════════════════════════════════
 
@@ -397,6 +555,23 @@ namespace NoMapDiscordAdditions
         // ═══════════════════════════════════════════════════════════════════
         //  Encode
         // ═══════════════════════════════════════════════════════════════════
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  Compile-mode label stamp reuse
+        // ═══════════════════════════════════════════════════════════════════
+
+        // Rasterize one laid-out TMP_Text straight into a Color32[] buffer in
+        // 1:1 pixel space (buffer index = py*w + px, y bottom-up). Lets the
+        // compile finalize step draw captions with Valheim's real SDF font
+        // through the exact same glyph path the screen capture uses.
+        internal static void RasterizeTmpInto(Color32[] buf, int w, int h, TMP_Text tmp,
+            bool forceMeshUpdate = true)
+            => BlitText(buf, w, h, 0f, 0f, w, h, tmp, forceMeshUpdate);
+
+        // The atlas pixel cache is keyed by texture for the duration of one
+        // operation; the compile stamp must clear it when done so an unloaded
+        // font atlas can't leak (same contract as the end of CaptureMap).
+        internal static void ClearLabelAtlasCache() => _atlasCache.Clear();
 
         private static byte[] Encode(Color32[] output, int outputWidth, int outputHeight)
         {

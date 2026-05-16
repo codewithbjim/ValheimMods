@@ -16,7 +16,7 @@ namespace NoMapDiscordAdditions
 
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.0.5";
+        public const string PluginVersion = "1.0.6";
         private const string SyncedWithServerTag = " (Synced with Server)";
 
         public static Plugin Instance { get; private set; }
@@ -30,11 +30,16 @@ namespace NoMapDiscordAdditions
         public static ConfigEntry<bool> SpoilerImageData;
         public static ConfigEntry<bool> HideClouds;
         public static ConfigEntry<bool> ShowBiomeText;
+        public static ConfigEntry<bool> NormalizeCaptureLighting;
         public static ConfigEntry<bool> EnableCartographyTableLabels;
         public static ConfigEntry<bool> SpawnLabelIncludeDistance;
+        public static ConfigEntry<bool> SpawnLabelIncludeDirection;
         public static ConfigEntry<bool> SpawnLabelIncludeMapItemSources;
+        public static ConfigEntry<bool> ShowPinLabelOnCompile;
         public static ConfigEntry<int> CompileMaxDimension;
         public static ConfigEntry<string> CompileMessageTemplate;
+        public static ConfigEntry<bool> EnableCompileMapSharing;
+        public static ConfigEntry<string> CompileShareMessageTemplate;
         public static ConfigEntry<int> SendMaxDimension;
         public static ConfigEntry<bool> EnableLogs;
 
@@ -50,9 +55,11 @@ namespace NoMapDiscordAdditions
                 "Discord webhook URL used to send captured map images.");
 
             MessageTemplate = Config.Bind(
-                "Discord", "Message Template", "{player} shared a map update from {biome}{spawnDir}",
-                "Message sent with each screenshot. Supports {player}, {biome}, and {spawnDir} placeholders. " +
-                "{spawnDir} expands to e.g. \" — NE of Spawn\" when the map center is >200 units from spawn, otherwise empty." +
+                "Discord", "Message Template", "{player} shared a map update from {biome}{spawnDir}{table}",
+                "Message sent with each screenshot. Supports {player}, {biome}, {spawnDir} and {table} placeholders. " +
+                "{spawnDir} expands to e.g. \" — 1240m NE (45°)\" when the map center is >200 units from spawn, otherwise empty. " +
+                "{table} expands to \" — <name>\" using the name of the map pin on the cartography table " +
+                "(empty when reading a map item, or no named pin sits on the table)." +
                 SyncedWithServerTag);
 
             CaptureSuperSize = Config.Bind(
@@ -102,6 +109,13 @@ namespace NoMapDiscordAdditions
                 "UI", "Show Biome Text", false,
                 "If enabled, the biome label is included in captured map images. Client-only.");
 
+            NormalizeCaptureLighting = Config.Bind(
+                "General", "Normalize Capture Lighting", true,
+                "If enabled, the texture-capture path renders the map as if at " +
+                "noon regardless of the in-game time of day. Keeps brightness " +
+                "consistent so a multi-tile compiled map doesn't show dark/light " +
+                "seams between tiles captured at different times. Client-only.");
+
             EnableCartographyTableLabels = Config.Bind(
                 "Pin Label", "Enabled", true,
                 "If enabled, cartography-table pins on the large map are decorated with a " +
@@ -110,8 +124,15 @@ namespace NoMapDiscordAdditions
 
             SpawnLabelIncludeDistance = Config.Bind(
                 "Pin Label", "Include Distance", true,
-                "If enabled, the label includes the meters from spawn (e.g. \"1240m NorthEast (45°)\"). " +
-                "If disabled, only the direction is shown (e.g. \"NorthEast (45°)\")." +
+                "If enabled, the label includes the meters from spawn (e.g. \"1240m\" or " +
+                "\"1240m NorthEast (45°)\" when direction is also enabled)." +
+                SyncedWithServerTag);
+
+            SpawnLabelIncludeDirection = Config.Bind(
+                "Pin Label", "Include Direction from Spawn", false,
+                "If enabled, the label includes the compass direction from spawn " +
+                "(e.g. \"NorthEast (45°)\"). Off by default. If both distance and " +
+                "direction are disabled, no label is drawn." +
                 SyncedWithServerTag);
 
             SpawnLabelIncludeMapItemSources = Config.Bind(
@@ -120,15 +141,25 @@ namespace NoMapDiscordAdditions
                 "a portable map item (e.g. ZenMap parchment), not just from a cartography table." +
                 SyncedWithServerTag);
 
+            ShowPinLabelOnCompile = Config.Bind(
+                "Pin Label", "Show on Compile Mode", true,
+                "If enabled, the distance/direction-from-spawn captions are baked " +
+                "into MAP COMPILE tile captures (still gated by Pin Label.Enabled). " +
+                "Disable to keep compiled maps label-free without affecting plain " +
+                "COPY/SEND captures." +
+                SyncedWithServerTag);
+
             CompileMaxDimension = Config.Bind(
                 "Map Compile", "Max Output Dimension", 2560,
                 new ConfigDescription(
-                    "Longest pixel dimension of the compiled output PNG. The other axis " +
-                    "is sized to preserve world aspect. File size scales with the square " +
-                    "of this value (2× dimension ≈ 4× file size). Default 2560 keeps " +
-                    "even dense compositions under Discord's 10MB free-tier attachment " +
-                    "limit; raise to 3072 for sharper output if your compositions are " +
-                    "lighter, or to 4096+ if you don't plan to send via Discord." +
+                    "Longest pixel dimension of the compiled PNG used for the result " +
+                    "panel PREVIEW, COPY and SEND TO DISCORD. The other axis is sized " +
+                    "to preserve world aspect. File size scales with the square of this " +
+                    "value (2× dimension ≈ 4× file size). Default 2560 keeps even dense " +
+                    "compositions under Discord's 10MB free-tier attachment limit; raise " +
+                    "to 3072 for sharper output if your compositions are lighter, or to " +
+                    "4096+ if you don't plan to send via Discord. Does NOT affect SAVE — " +
+                    "SAVE always writes full native per-tile resolution (capped at 8192px)." +
                     SyncedWithServerTag,
                     new AcceptableValueRange<int>(512, 8192)));
 
@@ -137,6 +168,25 @@ namespace NoMapDiscordAdditions
                 "{player} compiled a map from {tileCount} cartography tables.",
                 "Discord message template used when SEND TO DISCORD is clicked from " +
                 "the compile result panel. Supports {player} and {tileCount} placeholders." +
+                SyncedWithServerTag);
+
+            EnableCompileMapSharing = Config.Bind(
+                "Map Compile", "Enable Map Sharing", true,
+                "If enabled, compile mode can share its tiles with teammates: the " +
+                "SHARE/EXPORT button is shown and the incoming share folder is " +
+                "auto-imported into the active session. Disable to keep compile " +
+                "mode purely local — the SHARE/EXPORT button is hidden and no " +
+                "incoming tiles are imported." +
+                SyncedWithServerTag);
+
+            CompileShareMessageTemplate = Config.Bind(
+                "Map Compile", "Share Message Template",
+                "{player} shared {tileCount} map tile(s) for compile mode. " +
+                "Save the attached PNG(s) into BepInEx/config/" + PluginName +
+                "/compile-share/incoming and they auto-import next time you open the map.",
+                "Discord message sent (once, with the first attachment) when " +
+                "SHARE TILES is clicked in compile mode. Supports {player} and " +
+                "{tileCount} placeholders." +
                 SyncedWithServerTag);
 
             SendMaxDimension = Config.Bind(
@@ -402,6 +452,76 @@ namespace NoMapDiscordAdditions
             }
         }
 
+        /// <summary>
+        /// Exports the current compile session's tiles as metadata-embedded
+        /// PNGs (also written to compile-share/out for manual attachment) and,
+        /// when a webhook is configured, sends them to Discord so teammates can
+        /// drop them into their incoming folder and merge them in. Called by the
+        /// SHARE TILES compile-mode button.
+        /// </summary>
+        public void ShareCompileTiles()
+        {
+            if (_sendingInProgress) return;
+            if (!ModHelpers.EffectiveConfig.EnableCompileMapSharing) return;
+
+            var outgoing = MapCompile.MapTileShare.PrepareExport();
+            if (outgoing == null || outgoing.Count == 0)
+            {
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    "No tiles to share.");
+                return;
+            }
+
+            string dir = MapCompile.MapTileShare.ShareOutDirForCurrentWorld();
+            if (string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl))
+            {
+                // No webhook — the PNGs are still on disk; point the player there.
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    $"Saved {outgoing.Count} shareable tile(s). Drag them into Discord from the compile-share/out folder.");
+                ModLog.Info($"[NoMapDiscordAdditions] Shareable tiles written to {dir}");
+                return;
+            }
+
+            _sendingInProgress = true;
+            StartCoroutine(ShareCompileTilesCoroutine(outgoing));
+        }
+
+        private System.Collections.IEnumerator ShareCompileTilesCoroutine(
+            System.Collections.Generic.List<MapCompile.MapTileShare.OutgoingTile> outgoing)
+        {
+            try
+            {
+                var player = Player.m_localPlayer;
+                string playerName = player != null ? player.GetPlayerName() : "unknown";
+                string template = ModHelpers.EffectiveConfig.CompileShareMessageTemplate;
+                string message = template
+                    .Replace("{player}", playerName)
+                    .Replace("{tileCount}", outgoing.Count.ToString());
+
+                player?.Message(MessageHud.MessageType.Center,
+                    $"Sharing {outgoing.Count} tile(s) to Discord...");
+
+                // Batch up to 5 attachments per Discord message; sets larger
+                // than that spill into additional 5-image messages. The
+                // explanatory content rides only on the first message so the
+                // channel isn't spammed with repeated text. Shared tiles are
+                // never spoiler-tagged — the recipient needs the preview to
+                // tell regions apart before importing.
+                var images = new System.Collections.Generic.List<DiscordWebhook.OutgoingImage>(outgoing.Count);
+                foreach (var t in outgoing)
+                    images.Add(new DiscordWebhook.OutgoingImage { Bytes = t.Bytes, FileName = t.FileName });
+
+                yield return DiscordWebhook.SendImageBatches(images, message, false);
+
+                player?.Message(MessageHud.MessageType.Center,
+                    $"Shared {outgoing.Count} tile(s).");
+            }
+            finally
+            {
+                _sendingInProgress = false;
+            }
+        }
+
         // Called from a coroutine — already on the Unity main thread.
         private static void CopyToClipboard(byte[] pngData)
         {
@@ -605,6 +725,9 @@ namespace NoMapDiscordAdditions
             string spawnLabel = SpawnDirection.GetLabel();
             string spawnDirText = spawnLabel != null ? $" — {spawnLabel}" : "";
 
+            string tableName = SpawnDirection.GetTableName();
+            string tableText = !string.IsNullOrEmpty(tableName) ? $" — {tableName}" : "";
+
             // Legacy configs (from earlier plugin versions) may have a Message Template
             // saved without the {spawnDir} placeholder — BepInEx never overwrites an
             // existing config value with a newer default. Append in that case so the
@@ -615,6 +738,14 @@ namespace NoMapDiscordAdditions
                 message = message.Replace("{spawnDir}", spawnDirText);
             else if (spawnDirText.Length > 0)
                 message += spawnDirText;
+
+            // Same legacy handling as {spawnDir}: replace in place when the
+            // template has the placeholder, otherwise append so older configs
+            // (saved before {table} existed) still get the table name.
+            if (message.Contains("{table}"))
+                message = message.Replace("{table}", tableText);
+            else if (tableText.Length > 0)
+                message += tableText;
 
             message = message
                 .Replace("{player}", playerName)

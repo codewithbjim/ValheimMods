@@ -38,6 +38,10 @@ namespace NoMapDiscordAdditions.MapCompile
             ApplyValheimStyle(bgImage, button);
 
             var textObj = new GameObject("Text");
+            // Created inactive so TMP's Awake (which would log the missing
+            // "LiberationSans SDF" default-font warning) doesn't run until
+            // ApplyValheimFont has assigned Valheim's real font below.
+            textObj.SetActive(false);
             textObj.transform.SetParent(btnObj.transform, false);
 
             var textRect = textObj.AddComponent<RectTransform>();
@@ -52,6 +56,7 @@ namespace NoMapDiscordAdditions.MapCompile
             text.textWrappingMode = TextWrappingModes.NoWrap;
             text.overflowMode = TextOverflowModes.Overflow;
             ApplyValheimFont(text);
+            textObj.SetActive(true);
 
             labelText = text;
             return button;

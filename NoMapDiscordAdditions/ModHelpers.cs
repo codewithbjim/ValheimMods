@@ -54,9 +54,17 @@ namespace NoMapDiscordAdditions
                 ? (Plugin.SpawnLabelIncludeDistance?.Value ?? true)
                 : NetworkConfigSync.EffectiveSpawnLabelIncludeDistance;
 
+            public static bool SpawnLabelIncludeDirection => ServerSyncCompat.IsActive
+                ? (Plugin.SpawnLabelIncludeDirection?.Value ?? false)
+                : NetworkConfigSync.EffectiveSpawnLabelIncludeDirection;
+
             public static bool SpawnLabelIncludeMapItemSources => ServerSyncCompat.IsActive
                 ? (Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false)
                 : NetworkConfigSync.EffectiveSpawnLabelIncludeMapItemSources;
+
+            public static bool ShowPinLabelOnCompile => ServerSyncCompat.IsActive
+                ? (Plugin.ShowPinLabelOnCompile?.Value ?? true)
+                : NetworkConfigSync.EffectiveShowPinLabelOnCompile;
 
             public static int CompileMaxDimension => ServerSyncCompat.IsActive
                 ? (Plugin.CompileMaxDimension?.Value ?? 2560)
@@ -69,8 +77,98 @@ namespace NoMapDiscordAdditions
 
             public static string MessageTemplate => ServerSyncCompat.IsActive
                 ? (Plugin.MessageTemplate?.Value
-                    ?? "{player} shared a map update from {biome}{spawnDir}")
+                    ?? "{player} shared a map update from {biome}{spawnDir}{table}")
                 : NetworkConfigSync.EffectiveMessageTemplate;
+
+            public static bool EnableCompileMapSharing => ServerSyncCompat.IsActive
+                ? (Plugin.EnableCompileMapSharing?.Value ?? true)
+                : NetworkConfigSync.EffectiveEnableCompileMapSharing;
+
+            public static string CompileShareMessageTemplate => ServerSyncCompat.IsActive
+                ? (Plugin.CompileShareMessageTemplate?.Value
+                    ?? "{player} shared {tileCount} map tile(s) for compile mode.")
+                : NetworkConfigSync.EffectiveCompileShareMessageTemplate;
+        }
+
+        // ── Capture lighting normalization ──────────────────────────────────
+        // Valheim's map shader darkens with time of day: EnvMan.SetEnv writes
+        // the GLOBAL shader props _SunColor/_AmbientColor/_SunDir/_SunFogColor
+        // every frame from the current environment interpolated by day fraction
+        // (assembly_valheim EnvMan.cs ~753-758). A tile captured at night is
+        // therefore much darker than one captured at noon, which shows up as
+        // blocky brightness seams in a compiled multi-tile map. We temporarily
+        // override those globals with the *day* palette of the current
+        // environment (so every tile renders as if at noon, regardless of when
+        // it was actually captured) for the single offscreen render pass, then
+        // restore — EnvMan rewrites them next frame anyway, but restoring keeps
+        // any same-frame world rendering correct.
+
+        private static readonly int _idSunDir      = Shader.PropertyToID("_SunDir");
+        private static readonly int _idSunColor    = Shader.PropertyToID("_SunColor");
+        private static readonly int _idAmbient     = Shader.PropertyToID("_AmbientColor");
+        private static readonly int _idSunFogColor = Shader.PropertyToID("_SunFogColor");
+
+        public struct SavedLighting
+        {
+            public bool Active;
+            public Vector4 SunDir;
+            public Color SunColor;
+            public Color Ambient;
+            public Color SunFogColor;
+        }
+
+        /// <summary>
+        /// Saves the four time-of-day globals and overwrites them with the
+        /// current environment's noon (day) values. Pass the result to
+        /// <see cref="RestoreLighting"/> in a finally block.
+        /// </summary>
+        public static SavedLighting OverrideLightingToNoon()
+        {
+            var saved = new SavedLighting
+            {
+                Active      = true,
+                SunDir      = Shader.GetGlobalVector(_idSunDir),
+                SunColor    = Shader.GetGlobalColor(_idSunColor),
+                Ambient     = Shader.GetGlobalColor(_idAmbient),
+                SunFogColor = Shader.GetGlobalColor(_idSunFogColor),
+            };
+
+            // Defaults if EnvMan/env is unavailable — neutral bright daylight.
+            Color ambient    = new Color(0.80f, 0.80f, 0.80f, 1f);
+            Color sunColor   = Color.white * 1.2f;
+            Color sunFog     = Color.white;
+            float sunAngle   = 60f;
+
+            var env = EnvMan.instance != null ? EnvMan.instance.m_currentEnv : null;
+            if (env != null)
+            {
+                ambient  = env.m_ambColorDay;
+                sunColor = env.m_sunColorDay * env.m_lightIntensityDay;
+                sunFog   = env.m_fogColorSunDay;
+                sunAngle = env.m_sunAngle;
+            }
+
+            // Noon sun direction — EnvMan.cs:675 rotation at day fraction 0.5.
+            Quaternion rot =
+                Quaternion.Euler(-90f + sunAngle, 0f, 0f) *
+                Quaternion.Euler(0f, -90f, 0f) *
+                Quaternion.Euler(-90f + 360f * 0.5f, 0f, 0f);
+            Vector3 sunDir = -(rot * Vector3.forward);
+
+            Shader.SetGlobalVector(_idSunDir, new Vector4(sunDir.x, sunDir.y, sunDir.z, 0f));
+            Shader.SetGlobalColor(_idSunColor, sunColor);
+            Shader.SetGlobalColor(_idAmbient, ambient);
+            Shader.SetGlobalColor(_idSunFogColor, sunFog);
+            return saved;
+        }
+
+        public static void RestoreLighting(SavedLighting saved)
+        {
+            if (!saved.Active) return;
+            Shader.SetGlobalVector(_idSunDir, saved.SunDir);
+            Shader.SetGlobalColor(_idSunColor, saved.SunColor);
+            Shader.SetGlobalColor(_idAmbient, saved.Ambient);
+            Shader.SetGlobalColor(_idSunFogColor, saved.SunFogColor);
         }
 
         // ── Shader property suppression ─────────────────────────────────────

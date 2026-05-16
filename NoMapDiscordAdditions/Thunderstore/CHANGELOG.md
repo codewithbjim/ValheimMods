@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.0.6
+
+### Map Compile — resumable sessions & full-resolution save
+
+- Compile sessions now survive `SAVE`/`COPY`/`SEND TO DISCORD`/`DONE` — only `DISCARD`/`CANCEL` deletes a session. `DONE` returns to compile mode with all tiles intact; sessions persist across restart (`RESUME COMPILE (N)`)
+- `SAVE` now writes a full native-resolution PNG — no Discord-safe downsample, sharpest tile maps 1:1, hard-capped at 8192px on the longest axis. Filename includes pixel dimensions; the status line reports native vs. clamp. Preview/`COPY`/`SEND` payloads stay at the Discord-safe size
+- Renamed compile-mode `FINISH (N)` → **`COMPILE (N)`** — produces a result without ending the session
+- Compiled-map captions now render in Valheim's in-game font (Averia Serif Libre SDF + outline) via a Unity TMP pass instead of a system serif
+
+### Map Compile — tile sharing (new)
+
+- Added **SHARE** to the compile panel (**EXPORT** when no webhook is configured) — exports every session tile as a self-describing PNG with its world rect embedded in a standard `tEXt` chunk (still a normal viewable image). With a webhook, tiles post to Discord one attachment per message; copies are always written to `compile-share/out/<world>/`
+- **Auto-import**: PNGs dropped in `compile-share/incoming` are scanned when the large map opens during a compile session, merged into the active session, then moved to `incoming/processed` or `incoming/ignored`. Tiles dedup by stable identity (world + rect + capturer), so re-sharing updates in place instead of stacking
+- Added `Map Compile.Enable Map Sharing` config (default `true`, server-synced) — off hides SHARE/EXPORT and disables auto-import
+- Added `Map Compile.Share Message Template` config (supports `{player}`/`{tileCount}`, server-synced)
+
+### Fixes
+
+- Fixed compile mode getting stuck after a compile: closing and reopening the minimap with the result panel open left no result panel and no `START`/`RESUME` button. The session is now preserved across map close; reopening shows `RESUME COMPILE (N)` (re-`COMPILE` for a fresh result panel)
+
+### Capture
+
+- Added `Pin Label.Show on Compile Mode` (default `true`, server-synced) — gates the "of Spawn" captions on the compiled map (still gated by `Pin Label.Enabled`) without affecting plain COPY/SEND
+- **MAP COMPILE** captions are now stamped once onto the finished composite instead of baked per-tile — baked near-white captions lost to the per-tile chroma-pick wherever tiles overlapped. Drawn-on-top labels have a black outline for readability over any biome
+- The screen/texture COPY/SEND paths still bake per-pin "of Spawn" captions when `Pin Label.Enabled`; the texture path now rasterizes their TMP glyphs from the font atlas (SDF-aware), matching the screen path
+- Added `General.Normalize Capture Lighting` (default `true`, client-only) — texture capture renders the map as if at noon, eliminating the dark/light seams between tiles captured at different times of day; the environment's day palette is applied for the offscreen pass and globals restored immediately after
+
+### Named cartography tables (new)
+
+- Tables now carry a **human-readable name**, resolved from the closest named map pin sitting on the table (within ~8m). ZenMap auto-pins each table as the vanilla "house" icon — rename that pin (or drop a Town pin on the table) and the mod treats it as the table's name. No name set → behaves exactly as before
+- Added a `{table}` placeholder to `Discord.Message Template`. Like `{spawnDir}`, it's substituted in place when present and auto-appended for legacy templates saved before it existed, so existing configs pick up the table name without manual edits
+- The table name is captured per tile when added and persisted in the compile session JSON, so it survives even when the table is far away/unloaded at compile time. Compiled-map captions now read `{pinName} — {dist}m {dir}` (name, direction, or both — whichever is available), gated by the same `Pin Label` config
+
+### Compatibility
+
+- Bumped the **ZenMap** dependency floor to `1.7.3` — ≥1.7.3 self-heals the `Graphics.CopyTexture called with mismatching texture sizes` error on expanded worlds (broke fog reset/explore-all and degraded compile tiles on older versions); updating ZenMap is the fix
+
 ## 1.0.5
 
 - Repository moved to `github.com/codewithbjim/ValheimMods` — updated `website_url` in the manifest and all README image links to the new host

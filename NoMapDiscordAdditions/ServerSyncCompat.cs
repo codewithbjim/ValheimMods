@@ -47,11 +47,15 @@ namespace NoMapDiscordAdditions
                 AddSynced(Plugin.HideClouds, true);
                 AddSynced(Plugin.EnableCartographyTableLabels, true);
                 AddSynced(Plugin.SpawnLabelIncludeDistance, true);
+                AddSynced(Plugin.SpawnLabelIncludeDirection, true);
                 AddSynced(Plugin.SpawnLabelIncludeMapItemSources, true);
+                AddSynced(Plugin.ShowPinLabelOnCompile, true);
                 AddSynced(Plugin.CompileMaxDimension, true);
                 AddSynced(Plugin.CompileMessageTemplate, true);
                 AddSynced(Plugin.MessageTemplate, true);
                 AddSynced(Plugin.SendMaxDimension, true);
+                AddSynced(Plugin.EnableCompileMapSharing, true);
+                AddSynced(Plugin.CompileShareMessageTemplate, true);
 
                 IsActive = true;
                 ModLog.Info("[NoMapDiscordAdditions] ServerSync detected; using server-authoritative config sync.");

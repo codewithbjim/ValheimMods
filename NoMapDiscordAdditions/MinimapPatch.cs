@@ -48,8 +48,24 @@ namespace NoMapDiscordAdditions
             {
                 SpawnDirection.Clear();
                 MapCompileSession.ClearActiveTable();
+                // Keep the compiled result so reopening the map restores the
+                // panel — a plain Hide() here drops _result and leaves the
+                // session stuck in Reviewing (no panel, no START/RESUME).
                 if (MapCompileResultPanel.IsVisible)
-                    MapCompileResultPanel.Hide();
+                    MapCompileResultPanel.HideKeepingResult();
+            }
+            else if (MapCompileSession.CurrentState == MapCompileSession.State.Reviewing
+                     && !MapCompileResultPanel.IsVisible
+                     && !MapCompileResultPanel.HasPendingResult)
+            {
+                // Reviewing but the compiled result was somehow lost: drop back
+                // to compile mode (tiles intact) so the player gets the
+                // ADD TILE / COMPILE / CANCEL panel instead of a dead screen —
+                // no progress is discarded. When the result IS preserved,
+                // MapCompileButtons shows a RESUME COMPILE button (set up by
+                // SetVisible above) and the panel stays hidden until recalled.
+                MapCompileSession.ReturnToCompiling();
+                MapCompileButtons.SetVisible(true);
             }
         }
     }

@@ -5,10 +5,12 @@ using UnityEngine;
 namespace NoMapDiscordAdditions
 {
     /// <summary>
-    /// Renders a "{N}m {DIR} of Spawn" caption beneath every visible cartography
-    /// table pin on the large map — but only for the duration of a Copy/Capture
-    /// operation, so the labels are baked into the screenshot without polluting
-    /// the live UI the rest of the time.
+    /// Renders a "{PinName} — {N}m {DIR}" caption beneath every visible
+    /// cartography table pin on the large map — but only for the duration of a
+    /// Copy/Capture operation, so the labels are baked into the screenshot
+    /// without polluting the live UI the rest of the time. The pin's own name
+    /// (the only author-given label a table can carry) prefixes the
+    /// spawn-direction part; either half is omitted when absent.
     ///
     /// Design notes:
     /// - One label GameObject per pin, kept in a pool keyed by PinData reference.
@@ -96,8 +98,22 @@ namespace NoMapDiscordAdditions
                 // marker is the cheapest, most accurate "visible" check.
                 if (pin.m_uiElement == null) continue;
 
-                string label = SpawnDirection.GetLabelForPos(pin.m_pos);
-                if (label == null) continue; // too close to spawn → no label
+                // The pin we're iterating IS the table's pin, so its own name
+                // is the table name — no need to go back through TablePinName.
+                // Prefix it onto the spawn-direction caption, e.g.
+                // "Base — 1240m NE (45°)". Either part may be absent: a named
+                // table near spawn shows just "Base"; an unnamed far table
+                // shows just the direction. Both absent → nothing to draw.
+                // Strips ZenMap's hidden "\0#<guid>" tracking suffix — see
+                // TablePinName.Clean. Reading raw m_name would leak the GUID.
+                string name = TablePinName.Clean(pin.m_name);
+
+                string dir = SpawnDirection.GetLabelForPos(pin.m_pos);
+
+                string label =
+                    name != null && dir != null ? $"{name} — {dir}" :
+                    name ?? dir;
+                if (label == null) continue;
 
                 LabelEntry entry;
                 if (!_labels.TryGetValue(pin, out entry) || entry.Root == null)

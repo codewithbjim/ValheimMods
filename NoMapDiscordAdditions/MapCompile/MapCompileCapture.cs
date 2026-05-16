@@ -17,6 +17,11 @@ namespace NoMapDiscordAdditions.MapCompile
             public int Height;
             public Vector2 WorldMin;
             public Vector2 WorldMax;
+            // True when every in-world map pixel inside the captured viewport is
+            // explored (per Valheim's own m_explored state). A partial tile is
+            // demoted by the compositor so its fog can never overwrite explored
+            // terrain from a complete tile.
+            public bool FullyMapped;
         }
 
         public static bool TryCapture(out Result result)
@@ -40,7 +45,11 @@ namespace NoMapDiscordAdditions.MapCompile
             // synchronously inside CaptureMap, so they stay consistent.
             Rect uv = minimap.m_mapImageLarge.uvRect;
 
-            byte[] png = MapCaptureTexture.CaptureMap();
+            // Never bake captions into compile tiles — they'd be eaten by the
+            // chroma-pick where tiles overlap. Compile mode stamps labels once
+            // onto the finished composite instead (see MapCompileLabelStamp,
+            // gated by Pin Label "Show on Compile Mode" + "Enabled").
+            byte[] png = MapCaptureTexture.CaptureMap(includePinLabels: false);
             if (png == null)
             {
                 ModLog.Warn("[NoMapDiscordAdditions] Compile capture: MapCaptureTexture returned null.");
@@ -56,7 +65,58 @@ namespace NoMapDiscordAdditions.MapCompile
                 Height = MapCaptureTexture.OutputHeight,
                 WorldMin = wmin,
                 WorldMax = wmax,
+                FullyMapped = IsRegionFullyMapped(minimap, uv),
             };
+            return true;
+        }
+
+        // Endless-ocean radius. Map pixels whose world position is past this
+        // (WorldGenerator.worldSize) can never be reached, so they stay
+        // unexplored forever — excluding them keeps a genuinely complete tile
+        // that merely shows some off-world void from being flagged partial.
+        private const float WorldRadius = 10000f;
+
+        /// <summary>
+        /// True when every reachable (in-world) map pixel covered by the
+        /// captured uvRect is explored, using Valheim's authoritative
+        /// <see cref="Minimap.m_explored"/> state — mod-independent and
+        /// unaffected by whatever fog colour ZenMap renders. Off-world pixels
+        /// (endless ocean past <see cref="WorldRadius"/>) are ignored.
+        /// </summary>
+        private static bool IsRegionFullyMapped(Minimap minimap, Rect uv)
+        {
+            var explored = minimap.m_explored;
+            int size = minimap.m_textureSize;
+            if (explored == null || size <= 0 || explored.Length < size * size)
+                return false; // unknown → treat as partial (safe: loses priority)
+
+            float uMin = Mathf.Clamp01(uv.xMin);
+            float vMin = Mathf.Clamp01(uv.yMin);
+            float uMax = Mathf.Clamp01(uv.xMax);
+            float vMax = Mathf.Clamp01(uv.yMax);
+
+            int x0 = Mathf.Clamp(Mathf.FloorToInt(uMin * size), 0, size - 1);
+            int x1 = Mathf.Clamp(Mathf.CeilToInt(uMax * size) - 1, 0, size - 1);
+            int y0 = Mathf.Clamp(Mathf.FloorToInt(vMin * size), 0, size - 1);
+            int y1 = Mathf.Clamp(Mathf.CeilToInt(vMax * size) - 1, 0, size - 1);
+
+            float pixelSize = minimap.m_pixelSize;
+            float half = size / 2f;
+            float r2 = WorldRadius * WorldRadius;
+
+            for (int y = y0; y <= y1; y++)
+            {
+                // World Z for this row (inverse of Minimap.MapPointToWorld,
+                // skipping the per-pixel struct alloc).
+                float wz = ((y + 0.5f) - half) * pixelSize;
+                int row = y * size;
+                for (int x = x0; x <= x1; x++)
+                {
+                    float wx = ((x + 0.5f) - half) * pixelSize;
+                    if (wx * wx + wz * wz > r2) continue;   // off-world
+                    if (!explored[row + x]) return false;   // a hole in coverage
+                }
+            }
             return true;
         }
     }
