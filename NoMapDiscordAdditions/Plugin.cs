@@ -1,11 +1,17 @@
 using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
+using Jotunn.Extensions;
 using UnityEngine;
 
 namespace NoMapDiscordAdditions
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
+    // Declaring Jotunn as a hard dependency makes Jotunn's SynchronizationManager
+    // include this plugin's config file in server -> client sync. Entries bound
+    // with synced: true (IsAdminOnly) are pushed from the server and locked on
+    // clients; the local value is cached and restored on disconnect.
+    [BepInDependency(Jotunn.Main.ModGuid)]
     public class Plugin : BaseUnityPlugin
     {
         public enum CaptureMethodMode
@@ -16,8 +22,7 @@ namespace NoMapDiscordAdditions
 
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.0.6";
-        private const string SyncedWithServerTag = " (Synced with Server)";
+        public const string PluginVersion = "1.0.7";
 
         public static Plugin Instance { get; private set; }
         public static ConfigEntry<string> WebhookUrl;
@@ -50,169 +55,185 @@ namespace NoMapDiscordAdditions
         {
             Instance = this;
 
-            WebhookUrl = Config.Bind(
-                "Discord", "Webhook URL", "",
-                "Discord webhook URL used to send captured map images.");
+            // synced: true  -> Jotunn marks the entry IsAdminOnly and syncs the
+            //                   server's value to clients (locked client-side).
+            // synced: false -> client-local setting, never synced.
+            // BindConfig appends its own "(Synced with Server)" / "(Not Synced)"
+            // note to the description, so we no longer hand-append a tag.
 
-            MessageTemplate = Config.Bind(
+            // synced: true so the server's webhook reaches clients (sending
+            // works for everyone), but Browsable = false keeps it out of the
+            // ConfigurationManager window so non-admin players can't read the
+            // URL from the in-game settings UI. It still lives in client memory
+            // / on the wire — same exposure as the previous RPC design, no
+            // worse — so this is not a true secret; it just isn't displayed.
+            WebhookUrl = Config.BindConfig(
+                "Discord", "Webhook URL", "",
+                "Discord webhook URL used to send captured map images.",
+                synced: true,
+                configAttributes: new ConfigurationManagerAttributes { Browsable = false });
+
+            MessageTemplate = Config.BindConfig(
                 "Discord", "Message Template", "{player} shared a map update from {biome}{spawnDir}{table}",
                 "Message sent with each screenshot. Supports {player}, {biome}, {spawnDir} and {table} placeholders. " +
                 "{spawnDir} expands to e.g. \" — 1240m NE (45°)\" when the map center is >200 units from spawn, otherwise empty. " +
                 "{table} expands to \" — <name>\" using the name of the map pin on the cartography table " +
-                "(empty when reading a map item, or no named pin sits on the table)." +
-                SyncedWithServerTag);
+                "(empty when reading a map item, or no named pin sits on the table).",
+                synced: true);
 
-            CaptureSuperSize = Config.Bind(
+            CaptureSuperSize = Config.BindConfig(
                 "General", "Capture Super Size", 2,
-                new ConfigDescription(
-                    "Screen-capture quality multiplier before map crop. " +
-                    "Higher values improve detail but increase frame-time and VRAM use. 1 = native, 2 = recommended, 3-4 = heavy." +
-                    SyncedWithServerTag,
-                    new AcceptableValueRange<int>(1, 4)));
+                "Screen-capture quality multiplier before map crop. " +
+                "Higher values improve detail but increase frame-time and VRAM use. 1 = native, 2 = recommended, 3-4 = heavy.",
+                synced: true,
+                acceptableValues: new AcceptableValueRange<int>(1, 4));
 
-            ScreenshotKey = Config.Bind(
+            ScreenshotKey = Config.BindConfig(
                 "Controls", "Screenshot Key", KeyCode.F10,
-                "Press while large map is open to capture and send to Discord.");
+                "Press while large map is open to capture and send to Discord.",
+                synced: false);
 
-            CopyKey = Config.Bind(
+            CopyKey = Config.BindConfig(
                 "Controls", "Copy Key", KeyCode.F11,
-                "Press while large map is open to capture and copy to the clipboard.");
+                "Press while large map is open to capture and copy to the clipboard.",
+                synced: false);
 
-            CopyFullResModifier = Config.Bind(
+            CopyFullResModifier = Config.BindConfig(
                 "Controls", "Copy Full Resolution Modifier", KeyCode.LeftControl,
                 "Hold this key while clicking COPY MAP / COPY (compiled map) to " +
                 "raise the cap from Send Max Dimension to 4096 — useful for high-" +
-                "fidelity output when pasting into an image editor.");
+                "fidelity output when pasting into an image editor.",
+                synced: false);
 
-            CaptureMethod = Config.Bind(
+            CaptureMethod = Config.BindConfig(
                 "General", "Capture Method", CaptureMethodMode.ScreenCapture,
-                "Choose the map capture mode." +
-                SyncedWithServerTag);
+                "Choose the map capture mode.",
+                synced: true);
 
-            EnableLogs = Config.Bind(
+            EnableLogs = Config.BindConfig(
                 "General", "Enable Logs", false,
                 "If true, this mod prints info/warning/error messages to the BepInEx " +
                 "console and Player.log. Defaults to false to keep logs quiet during " +
-                "normal play; turn on if you need to investigate a problem.");
+                "normal play; turn on if you need to investigate a problem.",
+                synced: false);
 
-            SpoilerImageData = Config.Bind(
+            SpoilerImageData = Config.BindConfig(
                 "Discord", "Spoiler Image Data", false,
-                "If enabled, sent map image attachments are tagged as Discord spoilers." +
-                SyncedWithServerTag);
+                "If enabled, sent map image attachments are tagged as Discord spoilers.",
+                synced: true);
 
-            HideClouds = Config.Bind(
+            HideClouds = Config.BindConfig(
                 "UI", "Hide Clouds", true,
-                "If enabled, cloud overlay is suppressed while capturing maps." +
-                SyncedWithServerTag);
+                "If enabled, cloud overlay is suppressed while capturing maps.",
+                synced: true);
 
-            ShowBiomeText = Config.Bind(
+            ShowBiomeText = Config.BindConfig(
                 "UI", "Show Biome Text", false,
-                "If enabled, the biome label is included in captured map images. Client-only.");
+                "If enabled, the biome label is included in captured map images. Client-only.",
+                synced: false);
 
-            NormalizeCaptureLighting = Config.Bind(
+            NormalizeCaptureLighting = Config.BindConfig(
                 "General", "Normalize Capture Lighting", true,
                 "If enabled, the texture-capture path renders the map as if at " +
                 "noon regardless of the in-game time of day. Keeps brightness " +
                 "consistent so a multi-tile compiled map doesn't show dark/light " +
-                "seams between tiles captured at different times. Client-only.");
+                "seams between tiles captured at different times. Client-only.",
+                synced: false);
 
-            EnableCartographyTableLabels = Config.Bind(
+            EnableCartographyTableLabels = Config.BindConfig(
                 "Pin Label", "Enabled", true,
                 "If enabled, cartography-table pins on the large map are decorated with a " +
-                "distance/direction-from-spawn caption during a capture, baked into the screenshot." +
-                SyncedWithServerTag);
+                "distance/direction-from-spawn caption during a capture, baked into the screenshot.",
+                synced: true);
 
-            SpawnLabelIncludeDistance = Config.Bind(
-                "Pin Label", "Include Distance", true,
+            SpawnLabelIncludeDistance = Config.BindConfig(
+                "Pin Label", "Include Distance", false,
                 "If enabled, the label includes the meters from spawn (e.g. \"1240m\" or " +
-                "\"1240m NorthEast (45°)\" when direction is also enabled)." +
-                SyncedWithServerTag);
+                "\"1240m NorthEast (45°)\" when direction is also enabled).",
+                synced: true);
 
-            SpawnLabelIncludeDirection = Config.Bind(
+            SpawnLabelIncludeDirection = Config.BindConfig(
                 "Pin Label", "Include Direction from Spawn", false,
                 "If enabled, the label includes the compass direction from spawn " +
                 "(e.g. \"NorthEast (45°)\"). Off by default. If both distance and " +
-                "direction are disabled, no label is drawn." +
-                SyncedWithServerTag);
+                "direction are disabled, no label is drawn.",
+                synced: true);
 
-            SpawnLabelIncludeMapItemSources = Config.Bind(
+            SpawnLabelIncludeMapItemSources = Config.BindConfig(
                 "Pin Label", "Include Map Item Sources", false,
                 "If enabled, the spawn label is also shown when the map is opened from " +
-                "a portable map item (e.g. ZenMap parchment), not just from a cartography table." +
-                SyncedWithServerTag);
+                "a portable map item (e.g. ZenMap parchment), not just from a cartography table.",
+                synced: true);
 
-            ShowPinLabelOnCompile = Config.Bind(
+            ShowPinLabelOnCompile = Config.BindConfig(
                 "Pin Label", "Show on Compile Mode", true,
                 "If enabled, the distance/direction-from-spawn captions are baked " +
                 "into MAP COMPILE tile captures (still gated by Pin Label.Enabled). " +
                 "Disable to keep compiled maps label-free without affecting plain " +
-                "COPY/SEND captures." +
-                SyncedWithServerTag);
+                "COPY/SEND captures.",
+                synced: true);
 
-            CompileMaxDimension = Config.Bind(
+            CompileMaxDimension = Config.BindConfig(
                 "Map Compile", "Max Output Dimension", 2560,
-                new ConfigDescription(
-                    "Longest pixel dimension of the compiled PNG used for the result " +
-                    "panel PREVIEW, COPY and SEND TO DISCORD. The other axis is sized " +
-                    "to preserve world aspect. File size scales with the square of this " +
-                    "value (2× dimension ≈ 4× file size). Default 2560 keeps even dense " +
-                    "compositions under Discord's 10MB free-tier attachment limit; raise " +
-                    "to 3072 for sharper output if your compositions are lighter, or to " +
-                    "4096+ if you don't plan to send via Discord. Does NOT affect SAVE — " +
-                    "SAVE always writes full native per-tile resolution (capped at 8192px)." +
-                    SyncedWithServerTag,
-                    new AcceptableValueRange<int>(512, 8192)));
+                "Longest pixel dimension of the compiled PNG used for the result " +
+                "panel PREVIEW, COPY and SEND TO DISCORD. The other axis is sized " +
+                "to preserve world aspect. File size scales with the square of this " +
+                "value (2× dimension ≈ 4× file size). Default 2560 keeps even dense " +
+                "compositions under Discord's 10MB free-tier attachment limit; raise " +
+                "to 3072 for sharper output if your compositions are lighter, or to " +
+                "4096+ if you don't plan to send via Discord. Does NOT affect SAVE — " +
+                "SAVE always writes full native per-tile resolution (capped at 8192px).",
+                synced: true,
+                acceptableValues: new AcceptableValueRange<int>(512, 8192));
 
-            CompileMessageTemplate = Config.Bind(
+            CompileMessageTemplate = Config.BindConfig(
                 "Map Compile", "Compile Message Template",
                 "{player} compiled a map from {tileCount} cartography tables.",
                 "Discord message template used when SEND TO DISCORD is clicked from " +
-                "the compile result panel. Supports {player} and {tileCount} placeholders." +
-                SyncedWithServerTag);
+                "the compile result panel. Supports {player} and {tileCount} placeholders.",
+                synced: true);
 
-            EnableCompileMapSharing = Config.Bind(
+            EnableCompileMapSharing = Config.BindConfig(
                 "Map Compile", "Enable Map Sharing", true,
                 "If enabled, compile mode can share its tiles with teammates: the " +
                 "SHARE/EXPORT button is shown and the incoming share folder is " +
                 "auto-imported into the active session. Disable to keep compile " +
                 "mode purely local — the SHARE/EXPORT button is hidden and no " +
-                "incoming tiles are imported." +
-                SyncedWithServerTag);
+                "incoming tiles are imported.",
+                synced: true);
 
-            CompileShareMessageTemplate = Config.Bind(
+            CompileShareMessageTemplate = Config.BindConfig(
                 "Map Compile", "Share Message Template",
                 "{player} shared {tileCount} map tile(s) for compile mode. " +
                 "Save the attached PNG(s) into BepInEx/config/" + PluginName +
                 "/compile-share/incoming and they auto-import next time you open the map.",
                 "Discord message sent (once, with the first attachment) when " +
                 "SHARE TILES is clicked in compile mode. Supports {player} and " +
-                "{tileCount} placeholders." +
-                SyncedWithServerTag);
+                "{tileCount} placeholders.",
+                synced: true);
 
-            SendMaxDimension = Config.Bind(
+            SendMaxDimension = Config.BindConfig(
                 "Discord", "Send Max Dimension", 2560,
-                new ConfigDescription(
-                    "Cap on the longest pixel dimension of any image sent to Discord " +
-                    "OR copied to the clipboard via COPY MAP / COPY (compiled). Larger " +
-                    "captures are downscaled before encoding. Keeps even 4K-screen " +
-                    "ScreenCapture output safely under Discord's 10MB free-tier limit. " +
-                    "Hold Left CTRL when clicking COPY to raise the cap to 4096 — high " +
-                    "fidelity for image editing without producing pathologically large " +
-                    "clipboard payloads. Discord-bound paths always honor this setting." +
-                    SyncedWithServerTag,
-                    new AcceptableValueRange<int>(512, 8192)));
+                "Cap on the longest pixel dimension of any image sent to Discord " +
+                "OR copied to the clipboard via COPY MAP / COPY (compiled). Larger " +
+                "captures are downscaled before encoding. Keeps even 4K-screen " +
+                "ScreenCapture output safely under Discord's 10MB free-tier limit. " +
+                "Hold Left CTRL when clicking COPY to raise the cap to 4096 — high " +
+                "fidelity for image editing without producing pathologically large " +
+                "clipboard payloads. Discord-bound paths always honor this setting.",
+                synced: true,
+                acceptableValues: new AcceptableValueRange<int>(512, 8192));
 
             WebhookUrl.SettingChanged += (_, __) => CaptureButton.RefreshEnabledState();
             ShowBiomeText.SettingChanged += (_, __) => CaptureButton.RefreshBiomeToggleState();
             ScreenshotKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
             CopyKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
 
-            // Server authoritative config.
-            // Prefer the standard ServerSync approach (used by mods like AzuCraftyBoxes) when present.
-            // If ServerSync is not installed, fall back to a lightweight RPC-based sync.
-            ServerSyncCompat.Init(Config, PluginGUID, PluginName, PluginVersion);
-            if (!ServerSyncCompat.IsActive)
-                NetworkConfigSync.Init();
+            // Server-authoritative config is handled entirely by Jotunn's
+            // SynchronizationManager: because this plugin declares Jotunn as a
+            // BepInEx dependency, its config file is auto-included in sync, and
+            // every entry bound with synced: true is pushed from the server and
+            // locked on clients. No custom RPC or ServerSync reflection needed.
 
             _harmony = new Harmony(PluginGUID);
             _harmony.PatchAll(typeof(CartographyTablePatch));
@@ -241,9 +262,6 @@ namespace NoMapDiscordAdditions
         {
             if (_sendingInProgress)
                 return;
-
-            if (!ServerSyncCompat.IsActive)
-                NetworkConfigSync.Tick();
 
             // Only capture when the large map is open
             if (Minimap.instance == null || Minimap.instance.m_mode != Minimap.MapMode.Large)

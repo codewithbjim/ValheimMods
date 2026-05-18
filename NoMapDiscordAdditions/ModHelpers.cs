@@ -20,74 +20,59 @@ namespace NoMapDiscordAdditions
     internal static class ModHelpers
     {
         // ── Effective config ────────────────────────────────────────────────
+        // Jotunn's SynchronizationManager makes ConfigEntry.Value itself return
+        // the server's value on clients (the local value is cached and the
+        // getter is patched) for every entry bound with synced: true. So the
+        // "effective" value is simply .Value everywhere — no dual-path select.
+        // This wrapper is kept so existing call sites stay unchanged.
         public static class EffectiveConfig
         {
-            public static string WebhookUrl => ServerSyncCompat.IsActive
-                ? Plugin.WebhookUrl?.Value
-                : NetworkConfigSync.EffectiveWebhookUrl;
+            public static string WebhookUrl => Plugin.WebhookUrl?.Value;
 
-            public static bool UseTextureCapture => ServerSyncCompat.IsActive
-                ? Plugin.CaptureMethod.Value == Plugin.CaptureMethodMode.TextureCapture
-                : NetworkConfigSync.EffectiveUseTextureCapture;
+            public static bool UseTextureCapture =>
+                Plugin.CaptureMethod.Value == Plugin.CaptureMethodMode.TextureCapture;
 
-            public static int CaptureSuperSize => ServerSyncCompat.IsActive
-                ? Plugin.CaptureSuperSize.Value
-                : NetworkConfigSync.EffectiveCaptureSuperSize;
+            public static int CaptureSuperSize => Plugin.CaptureSuperSize.Value;
 
-            public static bool SpoilerImageData => ServerSyncCompat.IsActive
-                ? Plugin.SpoilerImageData.Value
-                : NetworkConfigSync.EffectiveSpoilerImageData;
+            public static bool SpoilerImageData => Plugin.SpoilerImageData.Value;
 
-            public static bool HideClouds => ServerSyncCompat.IsActive
-                ? Plugin.HideClouds.Value
-                : NetworkConfigSync.EffectiveHideClouds;
+            public static bool HideClouds => Plugin.HideClouds.Value;
 
-            public static bool EnableCartographyTableLabels => ServerSyncCompat.IsActive
-                ? (Plugin.EnableCartographyTableLabels?.Value ?? true)
-                : NetworkConfigSync.EffectiveEnableCartographyTableLabels;
+            public static bool EnableCartographyTableLabels =>
+                Plugin.EnableCartographyTableLabels?.Value ?? true;
 
-            public static int SendMaxDimension => ServerSyncCompat.IsActive
-                ? (Plugin.SendMaxDimension?.Value ?? 2560)
-                : NetworkConfigSync.EffectiveSendMaxDimension;
+            public static int SendMaxDimension =>
+                Plugin.SendMaxDimension?.Value ?? 2560;
 
-            public static bool SpawnLabelIncludeDistance => ServerSyncCompat.IsActive
-                ? (Plugin.SpawnLabelIncludeDistance?.Value ?? true)
-                : NetworkConfigSync.EffectiveSpawnLabelIncludeDistance;
+            public static bool SpawnLabelIncludeDistance =>
+                Plugin.SpawnLabelIncludeDistance?.Value ?? false;
 
-            public static bool SpawnLabelIncludeDirection => ServerSyncCompat.IsActive
-                ? (Plugin.SpawnLabelIncludeDirection?.Value ?? false)
-                : NetworkConfigSync.EffectiveSpawnLabelIncludeDirection;
+            public static bool SpawnLabelIncludeDirection =>
+                Plugin.SpawnLabelIncludeDirection?.Value ?? false;
 
-            public static bool SpawnLabelIncludeMapItemSources => ServerSyncCompat.IsActive
-                ? (Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false)
-                : NetworkConfigSync.EffectiveSpawnLabelIncludeMapItemSources;
+            public static bool SpawnLabelIncludeMapItemSources =>
+                Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false;
 
-            public static bool ShowPinLabelOnCompile => ServerSyncCompat.IsActive
-                ? (Plugin.ShowPinLabelOnCompile?.Value ?? true)
-                : NetworkConfigSync.EffectiveShowPinLabelOnCompile;
+            public static bool ShowPinLabelOnCompile =>
+                Plugin.ShowPinLabelOnCompile?.Value ?? true;
 
-            public static int CompileMaxDimension => ServerSyncCompat.IsActive
-                ? (Plugin.CompileMaxDimension?.Value ?? 2560)
-                : NetworkConfigSync.EffectiveCompileMaxDimension;
+            public static int CompileMaxDimension =>
+                Plugin.CompileMaxDimension?.Value ?? 2560;
 
-            public static string CompileMessageTemplate => ServerSyncCompat.IsActive
-                ? (Plugin.CompileMessageTemplate?.Value
-                    ?? "{player} compiled a map from {tileCount} cartography tables.")
-                : NetworkConfigSync.EffectiveCompileMessageTemplate;
+            public static string CompileMessageTemplate =>
+                Plugin.CompileMessageTemplate?.Value
+                ?? "{player} compiled a map from {tileCount} cartography tables.";
 
-            public static string MessageTemplate => ServerSyncCompat.IsActive
-                ? (Plugin.MessageTemplate?.Value
-                    ?? "{player} shared a map update from {biome}{spawnDir}{table}")
-                : NetworkConfigSync.EffectiveMessageTemplate;
+            public static string MessageTemplate =>
+                Plugin.MessageTemplate?.Value
+                ?? "{player} shared a map update from {biome}{spawnDir}{table}";
 
-            public static bool EnableCompileMapSharing => ServerSyncCompat.IsActive
-                ? (Plugin.EnableCompileMapSharing?.Value ?? true)
-                : NetworkConfigSync.EffectiveEnableCompileMapSharing;
+            public static bool EnableCompileMapSharing =>
+                Plugin.EnableCompileMapSharing?.Value ?? true;
 
-            public static string CompileShareMessageTemplate => ServerSyncCompat.IsActive
-                ? (Plugin.CompileShareMessageTemplate?.Value
-                    ?? "{player} shared {tileCount} map tile(s) for compile mode.")
-                : NetworkConfigSync.EffectiveCompileShareMessageTemplate;
+            public static string CompileShareMessageTemplate =>
+                Plugin.CompileShareMessageTemplate?.Value
+                ?? "{player} shared {tileCount} map tile(s) for compile mode.";
         }
 
         // ── Capture lighting normalization ──────────────────────────────────

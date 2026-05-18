@@ -320,6 +320,47 @@ namespace NoMapDiscordAdditions.MapCompile
         }
 
         /// <summary>
+        /// Wipe the compile session entirely — in-memory tiles AND the on-disk
+        /// session folder — then return to Idle. Unlike <see cref="Discard"/>
+        /// (which only knows the loaded <c>_sessionDir</c>) this also resolves
+        /// and deletes the folder for a session that is merely resumable while
+        /// Idle, so the destructive CLEAR action works in every state. Gated
+        /// behind a held L-CTRL in the UI so it can't be hit by accident.
+        /// Returns true if anything was actually removed.
+        /// </summary>
+        public static bool ClearSession()
+        {
+            // Resolve the on-disk dir even when nothing is loaded yet (Idle +
+            // resumable): _sessionDir stays null until Start/Resume.
+            string dir = _sessionDir;
+            if (string.IsNullOrEmpty(dir) && MapCompileEnvironment.HasSessionKey())
+                dir = MapCompileEnvironment.GetSessionDir(MapCompileEnvironment.GetSessionKey());
+
+            bool hadAnything = _tiles.Count > 0
+                || (!string.IsNullOrEmpty(dir) && Directory.Exists(dir));
+
+            _tiles.Clear();
+            try
+            {
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] Failed to clear session dir: {ex.Message}");
+            }
+
+            _sessionKey = null;
+            _sessionDir = null;
+            CurrentState = State.Idle;
+            StateChanged?.Invoke();
+
+            Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                hadAnything ? "Compile session cleared." : "No compile session to clear.");
+            return hadAnything;
+        }
+
+        /// <summary>
         /// "Done" in the result panel. The player has saved/copied/sent (or just
         /// wants to keep mapping); drop back to Compiling with every tile still
         /// in memory and on disk. The player can add more tiles at the next

@@ -21,14 +21,21 @@ namespace NoMapDiscordAdditions.MapCompile
         private const float BtnHeight = 38f;
         private const float StartBtnWidth = 220f;
         private const float ActionBtnWidth = 160f;
+        // Wide enough for the disabled "CLEAR (R-CTRL)" hint label so the
+        // button doesn't resize when the modifier is pressed/released.
+        private const float ClearBtnWidth = 150f;
         private const float HlgPadVertical = 6f;
         private const float HlgSpacing = 8f;
 
         private static GameObject _containerObj;
-        private static Button _btn1, _btn2, _btn3, _btn4;
-        private static TextMeshProUGUI _btn1Text, _btn2Text, _btn3Text, _btn4Text;
+        private static Button _btn1, _btn2, _btn3, _btn4, _btn5;
+        private static TextMeshProUGUI _btn1Text, _btn2Text, _btn3Text, _btn4Text, _btn5Text;
 
         private static bool _composeInProgress;
+
+        // Last sampled R-CTRL state for the CLEAR gate. Tracked so the
+        // per-frame driver only touches Unity objects when it actually flips.
+        private static bool _clearGateHeld;
 
         // Auto-import the incoming share folder at most once per map-open so a
         // session stays predictable; closing/reopening the large map pulls in
@@ -77,6 +84,13 @@ namespace NoMapDiscordAdditions.MapCompile
                 ActionBtnWidth, BtnHeight, "", out _btn3Text);
             _btn4 = MapUI.CreateButton("CompileBtn4", _containerObj.transform,
                 ActionBtnWidth, BtnHeight, "", out _btn4Text);
+            _btn5 = MapUI.CreateButton("CompileBtn5", _containerObj.transform,
+                ClearBtnWidth, BtnHeight, "", out _btn5Text);
+
+            // The CLEAR hold-to-enable gate depends on per-frame key state,
+            // not session events (all RefreshLayout reacts to), so it needs a
+            // MonoBehaviour ticking every frame the panel is alive.
+            _containerObj.AddComponent<ClearGateDriver>();
 
             MapCompileSession.StateChanged -= RefreshLayout;
             MapCompileSession.StateChanged += RefreshLayout;
@@ -150,6 +164,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn2.onClick.RemoveAllListeners();
             _btn3.onClick.RemoveAllListeners();
             _btn4.onClick.RemoveAllListeners();
+            _btn5.onClick.RemoveAllListeners();
 
             switch (MapCompileSession.CurrentState)
             {
@@ -191,6 +206,7 @@ namespace NoMapDiscordAdditions.MapCompile
             if (_btn2.gameObject.activeSelf) { w += _btn2.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn3.gameObject.activeSelf) { w += _btn3.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn4.gameObject.activeSelf) { w += _btn4.GetComponent<RectTransform>().sizeDelta.x; active++; }
+            if (_btn5.gameObject.activeSelf) { w += _btn5.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (active > 1) w += (active - 1) * HlgSpacing;
             float h = BtnHeight + HlgPadVertical * 2f;
             var containerRect = _containerObj.GetComponent<RectTransform>();
@@ -222,6 +238,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn2.gameObject.SetActive(false);
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
+            ShowClearButton(true);
         }
 
         private static void LayoutIdle()
@@ -255,6 +272,8 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn2.gameObject.SetActive(false);
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
+            // Only worth offering when there's a saved session on disk to wipe.
+            ShowClearButton(resumable);
         }
 
         private static void LayoutCompiling()
@@ -298,6 +317,58 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn4.GetComponent<RectTransform>().sizeDelta = new Vector2(110f, BtnHeight);
             _btn4.interactable = !_composeInProgress;
             _btn4.onClick.AddListener(() => MapCompileSession.Suspend());
+
+            ShowClearButton(true);
+        }
+
+        // CLEAR wipes the whole session (in-memory + on-disk) and drops back to
+        // Idle. It stays non-interactable unless L-CTRL is held — a destructive
+        // action one stray click away from CANCEL, so the modifier is the
+        // accident guard. ApplyClearGate (driven per-frame) keeps interactable +
+        // label in sync with the live key state.
+        private static void ShowClearButton(bool show)
+        {
+            _btn5.gameObject.SetActive(show);
+            if (!show) return;
+
+            _btn5.GetComponent<RectTransform>().sizeDelta = new Vector2(ClearBtnWidth, BtnHeight);
+            _btn5.onClick.AddListener(OnClearClicked);
+            ApplyClearGate(force: true);
+        }
+
+        // Re-evaluate the CLEAR hold-to-enable gate. Cheap enough to call every
+        // frame — only touches Unity objects when L-CTRL actually flips (or on
+        // a forced re-apply after a layout rebuild).
+        private static void ApplyClearGate(bool force = false)
+        {
+            if (_btn5 == null || !_btn5.gameObject.activeSelf) return;
+
+            bool held = Input.GetKey(KeyCode.LeftControl);
+            if (!force && held == _clearGateHeld) return;
+
+            _clearGateHeld = held;
+            _btn5.interactable = held && !_composeInProgress;
+            _btn5Text.text = held ? "CLEAR" : "CLEAR (L-CTRL)";
+        }
+
+        private static void OnClearClicked()
+        {
+            if (_composeInProgress) return;
+            // Belt-and-braces: the gate already keeps the button non-interactable
+            // without L-CTRL; re-check at click time anyway so a synthetic/queued
+            // click can't slip through.
+            if (!Input.GetKey(KeyCode.LeftControl)) return;
+
+            MapCompileResultPanel.Hide();      // drop any stale compiled preview
+            MapCompileSession.ClearSession();  // → StateChanged → RefreshLayout
+        }
+
+        // Per-frame driver for the CLEAR gate (see ApplyClearGate). Lives on the
+        // panel container so it dies with it; no-ops while the panel is hidden
+        // (ApplyClearGate early-returns on an inactive button).
+        private sealed class ClearGateDriver : MonoBehaviour
+        {
+            private void Update() => ApplyClearGate();
         }
 
         private static void OnShareClicked()

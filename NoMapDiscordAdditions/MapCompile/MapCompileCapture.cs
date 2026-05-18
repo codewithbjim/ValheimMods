@@ -17,10 +17,12 @@ namespace NoMapDiscordAdditions.MapCompile
             public int Height;
             public Vector2 WorldMin;
             public Vector2 WorldMax;
-            // True when every in-world map pixel inside the captured viewport is
-            // explored (per Valheim's own m_explored state). A partial tile is
-            // demoted by the compositor so its fog can never overwrite explored
-            // terrain from a complete tile.
+            // True when this tile represents a complete reveal of its area:
+            // under ZenMap, the active table/item is at (essentially) full
+            // reveal radius; otherwise (vanilla) every in-world pixel in the
+            // captured viewport is explored per Valheim's own m_explored state.
+            // A partial tile is demoted by the compositor so its fog can never
+            // overwrite explored terrain from a complete tile. See IsFullyMapped.
             public bool FullyMapped;
         }
 
@@ -65,9 +67,32 @@ namespace NoMapDiscordAdditions.MapCompile
                 Height = MapCaptureTexture.OutputHeight,
                 WorldMin = wmin,
                 WorldMax = wmax,
-                FullyMapped = IsRegionFullyMapped(minimap, uv),
+                FullyMapped = IsFullyMapped(minimap, uv),
             };
             return true;
+        }
+
+        /// <summary>
+        /// Decides the tile's <see cref="Result.FullyMapped"/> flag.
+        ///
+        /// In a ZenMap nomap world the reveal is a single circular disc per
+        /// table read, so the per-pixel rectangle test below can never pass
+        /// (the rect's corners always fall outside the disc) and would flag
+        /// even a maxed-out table as partial. When ZenMap is driving the
+        /// reveal we instead trust its own completeness ratio
+        /// (<c>MapLocation.Percent</c>): full radius ⇒ fully mapped.
+        ///
+        /// When ZenMap isn't the source (no ZenMap, or god-mode ExploreAll
+        /// with no active location), we fall back to Valheim's authoritative
+        /// per-pixel <see cref="Minimap.m_explored"/> test — correct for
+        /// vanilla walking exploration, which genuinely fills arbitrary shapes.
+        /// </summary>
+        private static bool IsFullyMapped(Minimap minimap, Rect uv)
+        {
+            if (ZenMapInterop.TryGetActiveRevealPercent(out float percent))
+                return percent >= ZenMapInterop.FullRevealThreshold;
+
+            return IsRegionFullyMapped(minimap, uv);
         }
 
         // Endless-ocean radius. Map pixels whose world position is past this

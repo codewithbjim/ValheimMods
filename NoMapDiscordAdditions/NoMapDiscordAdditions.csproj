@@ -14,6 +14,7 @@
     <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
     <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
     <JsonDotNetDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-JsonDotNET\Newtonsoft.Json.dll</JsonDotNetDll>
+    <JotunnDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-Jotunn\Jotunn.dll</JotunnDll>
     <TSPluginsDir>E:\ValheimMods\ValheimMods\NoMapDiscordAdditions\Thunderstore\plugins</TSPluginsDir>
   </PropertyGroup>
 
@@ -54,6 +55,19 @@
   <ItemGroup>
     <Reference Include="Newtonsoft.Json">
       <HintPath>$(JsonDotNetDll)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Jotunn — used for server-authoritative config sync via its
+       SynchronizationManager. Any plugin that declares Jotunn as a BepInEx
+       dependency has its default config file auto-synced; entries flagged
+       IsAdminOnly (Config.BindConfig synced: true) are pushed server -> client.
+       Referenced from the active r2modmanPlus profile (ZenMap already depends
+       on Jotunn, so the DLL is present alongside it). -->
+  <ItemGroup>
+    <Reference Include="Jotunn">
+      <HintPath>$(JotunnDll)</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.7
+
+### Server config sync — now via Jotunn
+
+- Replaced the custom RPC sync and the optional ServerSync compatibility shim with **Jotunn's `SynchronizationManager`**. Server-synced settings now sync through Jotunn's standard, well-tested path: the server's value is pushed to clients, the entry is locked client-side, and the client's local value is cached and restored on disconnect. No protocol version to keep in step anymore
+- **Jotunn is now a required dependency** (`ValheimModding-Jotunn-2.29.0`). ZenMap (already required) depends on Jotunn too, so most setups already have it
+- ServerSync is **no longer used** — remove any `Discord.Lock Configuration` expectations; locking is handled by Jotunn's admin-only mechanism instead
+
+### Map Compile
+
+- Added a **`CLEAR`** button to the compile panel — wipes the whole session (in-memory tiles **and** the on-disk session folder) and returns to idle. Shown while compiling and when a saved session is resumable. Stays greyed out and labelled `CLEAR (L-CTRL)` unless **Left CTRL** is held, so a destructive wipe can't be hit by accident next to `CANCEL`
+
+### Fixes
+
+- Fixed compile tiles captured from a ZenMap table at full reveal radius being wrongly flagged **partial** and demoted by the compositor (so they could be overwritten by other tiles' fog). ZenMap reveals a circular disc, which the per-pixel rectangle test can never fully satisfy; compile now trusts ZenMap's own reveal-completeness ratio when ZenMap is the reveal source, and falls back to Valheim's per-pixel `m_explored` test only for vanilla walking exploration
+
+### Config defaults
+
+- `Pin Label.Include Distance` now defaults to **`false`** (was `true`). Existing configs are unaffected — BepInEx never overwrites a saved value
+
+### Compatibility
+
+- Bumped the **ZenMap** dependency floor to `1.7.4`
+
 ## 1.0.6
 
 ### Map Compile — resumable sessions & full-resolution save
