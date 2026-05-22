@@ -150,19 +150,23 @@ try {
     Write-Host "  media uuid : $mediaUuid"
     Write-Host "  parts      : $partCount"
 
-    $fileStream = [System.IO.File]::OpenRead($zipPath)
     $parts = New-Object System.Collections.Generic.List[object]
-    try {
-        if ($partCount -eq 1) {
-            $u = $uploadUrls[0]
-            Write-Host "Uploading part 1/$partCount ($zipSize bytes)..."
-            $resp = Invoke-WebRequest -Method Put -Uri $u.url -InFile $zipPath `
-                -ContentType 'application/octet-stream' -UseBasicParsing
-            $etag = $resp.Headers['ETag']
-            if ($etag -is [array]) { $etag = $etag[0] }
-            $parts.Add(@{ ETag = $etag; PartNumber = [int]$u.part_number }) | Out-Null
-        }
-        else {
+    if ($partCount -eq 1) {
+        $u = $uploadUrls[0]
+        Write-Host "Uploading part 1/$partCount ($zipSize bytes)..."
+        $resp = Invoke-WebRequest -Method Put -Uri $u.url -InFile $zipPath `
+            -ContentType 'application/octet-stream' -UseBasicParsing
+        $etag = $resp.Headers['ETag']
+        if ($etag -is [array]) { $etag = $etag[0] }
+        $parts.Add(@{ ETag = $etag; PartNumber = [int]$u.part_number }) | Out-Null
+    }
+    else {
+        # Open the zip only for the multi-part path. Holding a FileShare.Read
+        # handle here while the single-part branch calls Invoke-WebRequest
+        # -InFile triggers a sharing violation ("used by another process"),
+        # because -InFile opens the same file for ReadWrite.
+        $fileStream = [System.IO.File]::OpenRead($zipPath)
+        try {
             $partSize = [Math]::Ceiling($zipSize / $partCount)
             foreach ($u in $uploadUrls) {
                 $partNum   = [int]$u.part_number
@@ -186,9 +190,9 @@ try {
                     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
                 }
             }
+        } finally {
+            $fileStream.Dispose()
         }
-    } finally {
-        $fileStream.Dispose()
     }
 
     Write-Host "Finishing upload..."
