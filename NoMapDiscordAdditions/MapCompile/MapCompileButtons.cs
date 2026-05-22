@@ -389,26 +389,31 @@ namespace NoMapDiscordAdditions.MapCompile
             var plugin = Plugin.Instance;
             if (plugin == null) return;
 
-            // Capture happens inside a coroutine because MapCaptureTexture must
-            // run after WaitForEndOfFrame for the screen-buffer-dependent path.
-            // The texture path used by compile mode doesn't strictly require it,
-            // but matching the existing capture flow keeps timing consistent.
+            // MapCompileCapture.Capture owns its own WaitForEndOfFrame timing
+            // (the screen-capture path must hide UI before the next frame
+            // renders; the texture path doesn't need to wait at all). Just
+            // hand it the callback.
             plugin.StartCoroutine(CaptureTileCoroutine());
         }
 
         private static IEnumerator CaptureTileCoroutine()
         {
-            yield return new WaitForEndOfFrame();
-
+            // Snapshot table pos BEFORE the capture yields — the player can
+            // walk away from the table mid-frame, but the tile we're about to
+            // capture still belongs to where they were when they clicked.
             if (!MapCompileSession.CanAddTile) yield break;
             Vector3 tablePos = MapCompileSession.ActiveTablePos.Value;
 
-            if (MapCompileCapture.TryCapture(out var result))
+            MapCompileCapture.Result? result = null;
+            yield return MapCompileCapture.Capture(r => result = r);
+
+            if (result.HasValue)
             {
+                var r = result.Value;
                 MapCompileSession.AddTile(
-                    result.Png, result.Width, result.Height,
-                    result.WorldMin, result.WorldMax, tablePos,
-                    result.FullyMapped);
+                    r.Png, r.Width, r.Height,
+                    r.WorldMin, r.WorldMax, tablePos,
+                    r.FullyMapped);
             }
             else
             {

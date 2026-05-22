@@ -30,6 +30,29 @@ namespace NoMapDiscordAdditions
         private static readonly Dictionary<Texture2D, Color32[]> _atlasCache =
             new Dictionary<Texture2D, Color32[]>();
 
+        // ── uv-clamp remap (the compile "squished icons" fix) ───────────────
+        // The map terrain is rendered from the uvRect *clamped* to [0,1]
+        // (DrawMapBase) and the world rect is derived the same way
+        // (MapCompileTile.ComputeWorldRect), so terrain composites correctly.
+        // But Valheim lays pins out on screen using the *raw* uvRect
+        // (Minimap.MapPointToLocalGuiPos: (mx-uvRect.xMin)/uvRect.width). When
+        // the large map is zoomed out, uvRect.width = m_largeZoom*screenAspect
+        // exceeds 1.0 (m_maxZoom=1, aspect≈1.78) while height ≤ 1.0, so the
+        // clamp shrinks width but not height. Blitting icons by their on-screen
+        // position then stretches every icon horizontally by rawW/clampedW and
+        // shifts it — the "height squished, icons wider" compile artefact.
+        //
+        // These fields carry the raw vs clamped uv span for one capture so the
+        // pin/label blit can map screen px → the clamped uv space the PNG
+        // actually represents. _uvRemapActive gates it: it's only set for the
+        // CaptureMap pin pass, so RasterizeTmpInto (compile label stamp onto
+        // the finished composite) keeps its plain 1:1 mapping. Every helper
+        // collapses to the old formula when inactive or unclamped, so framed
+        // COPY/SEND captures are bit-for-bit unchanged.
+        private static bool _uvRemapActive;
+        private static float _ruX0, _ruX1, _ruY0, _ruY1; // raw uv span
+        private static float _cuX0, _cuY0, _cuW, _cuH;    // clamped uv origin/size
+
         // ═══════════════════════════════════════════════════════════════════
         //  Public API
         // ═══════════════════════════════════════════════════════════════════
@@ -125,6 +148,12 @@ namespace NoMapDiscordAdditions
             }
 
             // ── CPU pass: pins + markers on top of the readback ───────────────
+            // Snapshot the raw vs clamped uv span so the icon/label blit can
+            // undo Valheim's screen-space pin layout (raw uvRect) into the
+            // clamped uv the PNG actually shows. Disabled (identity) when the
+            // viewport is fully inside [0,1] or degenerate.
+            BeginUvRemap(mapImage.uvRect);
+
             try
             {
                 // Activate the per-pin "of Spawn" captions so they bake into
@@ -155,7 +184,67 @@ namespace NoMapDiscordAdditions
                 TablePinLabel.HideAll();
                 // Drop atlas references so unloaded textures can be GC'd.
                 _atlasCache.Clear();
+                EndUvRemap();
             }
+        }
+
+        // ── uv-clamp remap helpers ───────────────────────────────────────────
+
+        // Capture the raw uvRect and its [0,1]-clamped counterpart. Remap is
+        // only armed when the clamp actually shrinks a span (i.e. the viewport
+        // pokes outside the map texture — the zoomed-out compile case) and the
+        // clamped span is non-degenerate; otherwise every helper stays identity.
+        private static void BeginUvRemap(Rect uv)
+        {
+            _ruX0 = uv.xMin; _ruX1 = uv.xMax;
+            _ruY0 = uv.yMin; _ruY1 = uv.yMax;
+
+            _cuX0 = Mathf.Clamp01(_ruX0);
+            _cuY0 = Mathf.Clamp01(_ruY0);
+            _cuW = Mathf.Clamp01(_ruX1) - _cuX0;
+            _cuH = Mathf.Clamp01(_ruY1) - _cuY0;
+
+            float rawW = _ruX1 - _ruX0;
+            float rawH = _ruY1 - _ruY0;
+            _uvRemapActive =
+                _cuW > 1e-6f && _cuH > 1e-6f && rawW > 1e-6f && rawH > 1e-6f &&
+                (Mathf.Abs(rawW - _cuW) > 1e-5f || Mathf.Abs(rawH - _cuH) > 1e-5f);
+        }
+
+        private static void EndUvRemap() => _uvRemapActive = false;
+
+        // screen X (px) → output X (px), through raw→clamped uv. Identity
+        // (fx*outW) when the remap is inactive or unclamped — matches the
+        // original ((cx-mapMinX)/mapW)*outputWidth exactly.
+        private static float ProjectX(float screenX, float mapMinX, float mapW, int outW)
+        {
+            float fx = (screenX - mapMinX) / mapW;
+            if (!_uvRemapActive) return fx * outW;
+            float ux = _ruX0 + fx * (_ruX1 - _ruX0);
+            return (ux - _cuX0) / _cuW * outW;
+        }
+
+        private static float ProjectY(float screenY, float mapMinY, float mapH, int outH)
+        {
+            float fy = (screenY - mapMinY) / mapH;
+            if (!_uvRemapActive) return fy * outH;
+            float uy = _ruY0 + fy * (_ruY1 - _ruY0);
+            return (uy - _cuY0) / _cuH * outH;
+        }
+
+        // Output px per screen px. Identity (outW/mapW) when inactive; folds in
+        // the rawSpan/clampedSpan correction otherwise so icons keep the same
+        // px size in clamped uv space that they had on screen.
+        private static float RemapScaleX(float mapW, int outW)
+        {
+            if (!_uvRemapActive) return outW / mapW;
+            return (outW / _cuW) * ((_ruX1 - _ruX0) / mapW);
+        }
+
+        private static float RemapScaleY(float mapH, int outH)
+        {
+            if (!_uvRemapActive) return outH / mapH;
+            return (outH / _cuH) * ((_ruY1 - _ruY0) / mapH);
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -305,14 +394,14 @@ namespace NoMapDiscordAdditions
             float hPx = corners[2].y - corners[0].y;
             if (wPx <= 0f || hPx <= 0f) return;
 
-            // Translate to fractional position inside the map's screen rect, then to output px.
-            float fx = (cx - mapMinX) / mapW;
-            float fy = (cy - mapMinY) / mapH;
-            int outCx = Mathf.RoundToInt(fx * outputWidth);
-            int outCy = Mathf.RoundToInt(fy * outputHeight);
+            // Map the icon's on-screen centre into output px through the
+            // raw→clamped uv remap (identity when unclamped) so it lines up
+            // with the clamped-uv terrain instead of being stretched/shifted.
+            int outCx = Mathf.RoundToInt(ProjectX(cx, mapMinX, mapW, outputWidth));
+            int outCy = Mathf.RoundToInt(ProjectY(cy, mapMinY, mapH, outputHeight));
 
-            float scaleX = outputWidth / mapW;
-            float scaleY = outputHeight / mapH;
+            float scaleX = RemapScaleX(mapW, outputWidth);
+            float scaleY = RemapScaleY(mapH, outputHeight);
             int outW = Mathf.Max(1, Mathf.RoundToInt(wPx * scaleX));
             int outH = Mathf.Max(1, Mathf.RoundToInt(hPx * scaleY));
 
@@ -410,8 +499,6 @@ namespace NoMapDiscordAdditions
             if (info == null || info.characterCount == 0) return;
 
             var rt = tmp.rectTransform;
-            float scaleX = outputWidth / mapW;
-            float scaleY = outputHeight / mapH;
 
             for (int ci = 0; ci < info.characterCount; ci++)
             {
@@ -431,10 +518,12 @@ namespace NoMapDiscordAdditions
                 Vector3 blW = rt.TransformPoint(ch.vertex_BL.position);
                 Vector3 trW = rt.TransformPoint(ch.vertex_TR.position);
 
-                float ox0 = ((blW.x - mapMinX) / mapW) * outputWidth;
-                float ox1 = ((trW.x - mapMinX) / mapW) * outputWidth;
-                float oy0 = ((blW.y - mapMinY) / mapH) * outputHeight;
-                float oy1 = ((trW.y - mapMinY) / mapH) * outputHeight;
+                // Same raw→clamped uv remap as the sprite path (identity for
+                // the 1:1 compile label stamp, where the remap is inactive).
+                float ox0 = ProjectX(blW.x, mapMinX, mapW, outputWidth);
+                float ox1 = ProjectX(trW.x, mapMinX, mapW, outputWidth);
+                float oy0 = ProjectY(blW.y, mapMinY, mapH, outputHeight);
+                float oy1 = ProjectY(trW.y, mapMinY, mapH, outputHeight);
 
                 int px0 = Mathf.FloorToInt(Mathf.Min(ox0, ox1));
                 int px1 = Mathf.CeilToInt(Mathf.Max(ox0, ox1));

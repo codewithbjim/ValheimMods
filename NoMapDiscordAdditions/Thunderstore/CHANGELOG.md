@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.8
+
+### Map Compile
+
+- Map compile now honours the global **`Capture Method`** config. Compile tiles use **screen capture by default** (matching SEND/COPY), with texture capture still available as the alternative. Brings compile in line with the rest of the mod's capture pipeline — one switch governs every capture
+- Screen-capture compile tiles crop to the clamped-uv sub-rect of the visible map so each tile's PNG aligns exactly with the world rect recorded for it. No black bars from zoom-past-the-world-edge bleed into adjacent tiles in the composite
+- Texture-capture compile tiles now render at a **4K-class longest edge** sized to the clamped-uv aspect ratio (was a fixed 1920×1080). Matches the per-tile detail of CTRL+COPY full-res and avoids spending pixels on the long axis when the clamped-uv is near-square
+
+### Capture lighting
+
+- **`Normalize Capture Lighting`** now applies to **every** capture path (texture *and* screen, SEND/COPY *and* compile). Previously it only affected the texture path; flipping it on now also keeps screen-capture SEND/COPY and compile tiles noon-lit so mixed-mode sessions stay visually consistent. Disable to have all captures reflect the live time of day
+
+### Fixes
+
+- Fixed compile texture-capture tiles showing **horizontally-stretched pin icons** when the large map was zoomed out past the world edge. Terrain rendered at clamped uv but pins were laid out from the raw `uvRect`, so icons got stretched/shifted in the captured PNG. The blit now remaps icon positions and sizes through the raw→clamped uv mapping; identity when zoom stays inside [0,1] so framed captures are bit-for-bit unchanged
+
+### Compatibility
+
+- Bumped the **ZenMap** dependency floor to `1.7.6`
+
 ## 1.0.7
 
 ### Server config sync — now via Jotunn

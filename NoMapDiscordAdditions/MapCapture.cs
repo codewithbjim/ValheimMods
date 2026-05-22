@@ -17,8 +17,24 @@ namespace NoMapDiscordAdditions
         /// <summary>
         /// Captures the visible large map. All large-map UI children except the map itself
         /// are hidden for the screenshot frame so they do not appear in the result.
+        /// <paramref name="cropToClampedUv"/> trims the output to only the portion
+        /// of the map RawImage that maps to clamped uv ∈ [0,1] — used by compile
+        /// mode so each tile's PNG aligns with the world rect we record (and to
+        /// drop the black bars Valheim's shader paints outside the world). Plain
+        /// SEND/COPY keeps the full map-rect crop.
+        /// <paramref name="includePinLabels"/> gates the per-pin "of Spawn" caption
+        /// bake (off for compile — labels stamp once on the composite instead).
+        /// <paramref name="sizeCallback"/> fires with the final PNG's width/height
+        /// after crop so compile can record the tile's pixel size.
+        /// Time-of-day lighting is normalized to noon for the capture frame when
+        /// the <c>Normalize Capture Lighting</c> config is on — applies to every
+        /// caller (SEND/COPY/compile) so the texture-capture path and screen-
+        /// capture path stay visually consistent.
         /// </summary>
-        public static IEnumerator CaptureVisibleMap(System.Action<byte[]> callback)
+        public static IEnumerator CaptureVisibleMap(System.Action<byte[]> callback,
+            bool cropToClampedUv = false,
+            bool includePinLabels = true,
+            System.Action<int, int> sizeCallback = null)
         {
             var minimap = Minimap.instance;
             if (minimap == null || minimap.m_mode != Minimap.MapMode.Large)
@@ -84,10 +100,26 @@ namespace NoMapDiscordAdditions
             if (ModHelpers.EffectiveConfig.HideClouds && mapMaterial != null)
                 savedClouds = ModHelpers.SuppressShaderPropsContaining(mapMaterial, "cloud");
 
+            // Override the time-of-day globals BEFORE yielding to end-of-frame.
+            // EnvMan.FixedUpdate (the only place sun/ambient globals get written
+            // — EnvMan.Update only touches clouds) has already run by the time
+            // we're here in Update phase, so our values stick through LateUpdate
+            // and rendering. Restored in finally after WaitForEndOfFrame /
+            // capture, before EnvMan's next FixedUpdate writes time-of-day back.
+            // Honours the same config the texture-capture path uses so a player
+            // who toggles it off gets it off everywhere.
+            ModHelpers.SavedLighting savedLighting = default;
+            if (Plugin.NormalizeCaptureLighting?.Value ?? true)
+                savedLighting = ModHelpers.OverrideLightingToNoon();
+
             // Activate the per-pin "of Spawn" labels for the duration of the capture
             // so they bake into the screenshot. Filtered to pins whose vanilla
             // marker is currently rendered. Hidden again in the finally block.
-            TablePinLabel.ShowForCapture();
+            // Compile mode opts out (includePinLabels=false) because baked labels
+            // get eaten by the compositor's chroma-pick where tiles overlap;
+            // labels are stamped once onto the finished composite instead.
+            if (includePinLabels)
+                TablePinLabel.ShowForCapture();
 
             try
             {
@@ -110,8 +142,11 @@ namespace NoMapDiscordAdditions
                     yield break;
                 }
 
-                Texture2D mapOnly = CropToMapRect(minimap, screen, superSize);
+                Texture2D mapOnly = cropToClampedUv
+                    ? CropToClampedUvRect(minimap, screen, superSize)
+                    : CropToMapRect(minimap, screen, superSize);
                 Texture2D toEncode = mapOnly ?? screen;
+                sizeCallback?.Invoke(toEncode.width, toEncode.height);
 
                 // Spawn-direction text now lives in the Discord message
                 // ({spawnDir} placeholder) and on the in-game per-pin labels;
@@ -151,6 +186,7 @@ namespace NoMapDiscordAdditions
                     go.SetActive(wasActive);
                 if (savedClouds != null && mapMaterial != null)
                     ModHelpers.RestoreShaderProps(mapMaterial, savedClouds);
+                ModHelpers.RestoreLighting(savedLighting);
                 CaptureButton.SetVisible(minimap.m_mode == Minimap.MapMode.Large);
             }
         }
@@ -196,6 +232,73 @@ namespace NoMapDiscordAdditions
             catch (System.Exception ex)
             {
                 ModLog.Warn($"[NoMapDiscordAdditions] Crop failed, sending full screen: {ex.Message}");
+                return null;
+            }
+        }
+
+        // Crop down to just the on-screen sub-rect that corresponds to the
+        // clamped uv span ([0,1] ∩ uvRect). Compile mode uses this so a tile's
+        // PNG covers exactly the world rect MapCompileTile.ComputeWorldRect
+        // records (which is derived from the same clamped uv). Without the
+        // clamp-aware crop, a zoomed-out tile would include the black bars
+        // Valheim's shader draws past the world edge, and the bars would land
+        // on top of neighbouring tiles in the composite.
+        private static Texture2D CropToClampedUvRect(Minimap minimap, Texture2D screen, int superSize)
+        {
+            RawImage mapImage = minimap.m_mapImageLarge;
+            if (mapImage == null) return null;
+
+            Rect uv = mapImage.uvRect;
+            float rawW = uv.xMax - uv.xMin;
+            float rawH = uv.yMax - uv.yMin;
+            if (rawW <= 1e-6f || rawH <= 1e-6f) return null;
+
+            float cuX0 = Mathf.Clamp01(uv.xMin);
+            float cuX1 = Mathf.Clamp01(uv.xMax);
+            float cuY0 = Mathf.Clamp01(uv.yMin);
+            float cuY1 = Mathf.Clamp01(uv.yMax);
+            if (cuX1 - cuX0 <= 1e-6f || cuY1 - cuY0 <= 1e-6f) return null;
+
+            var rt = mapImage.rectTransform;
+            var corners = new Vector3[4];
+            rt.GetWorldCorners(corners);
+            float mapMinX = Mathf.Min(corners[0].x, corners[2].x);
+            float mapMinY = Mathf.Min(corners[0].y, corners[2].y);
+            float mapMaxX = Mathf.Max(corners[0].x, corners[2].x);
+            float mapMaxY = Mathf.Max(corners[0].y, corners[2].y);
+            float mapW = mapMaxX - mapMinX;
+            float mapH = mapMaxY - mapMinY;
+
+            // Screen-space fractions of the RawImage that correspond to the
+            // clamped uv span — collapses to (0,1) on both axes when the
+            // viewport is fully inside [0,1], so normal-zoom captures keep the
+            // full map rect.
+            float fxLo = (cuX0 - uv.xMin) / rawW;
+            float fxHi = (cuX1 - uv.xMin) / rawW;
+            float fyLo = (cuY0 - uv.yMin) / rawH;
+            float fyHi = (cuY1 - uv.yMin) / rawH;
+
+            float minX = (mapMinX + fxLo * mapW) * superSize;
+            float maxX = (mapMinX + fxHi * mapW) * superSize;
+            float minY = (mapMinY + fyLo * mapH) * superSize;
+            float maxY = (mapMinY + fyHi * mapH) * superSize;
+
+            int x = Mathf.Clamp(Mathf.RoundToInt(minX), 0, screen.width - 1);
+            int y = Mathf.Clamp(Mathf.RoundToInt(minY), 0, screen.height - 1);
+            int w = Mathf.Clamp(Mathf.RoundToInt(maxX) - x, 1, screen.width - x);
+            int h = Mathf.Clamp(Mathf.RoundToInt(maxY) - y, 1, screen.height - y);
+
+            try
+            {
+                Color[] pixels = screen.GetPixels(x, y, w, h);
+                var cropped = new Texture2D(w, h, TextureFormat.RGB24, false);
+                cropped.SetPixels(pixels);
+                cropped.Apply();
+                return cropped;
+            }
+            catch (System.Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] Clamped-uv crop failed: {ex.Message}");
                 return null;
             }
         }

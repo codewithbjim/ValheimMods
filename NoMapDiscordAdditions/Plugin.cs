@@ -22,7 +22,7 @@ namespace NoMapDiscordAdditions
 
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.0.7";
+        public const string PluginVersion = "1.0.8";
 
         public static Plugin Instance { get; private set; }
         public static ConfigEntry<string> WebhookUrl;
@@ -134,10 +134,13 @@ namespace NoMapDiscordAdditions
 
             NormalizeCaptureLighting = Config.BindConfig(
                 "General", "Normalize Capture Lighting", true,
-                "If enabled, the texture-capture path renders the map as if at " +
-                "noon regardless of the in-game time of day. Keeps brightness " +
-                "consistent so a multi-tile compiled map doesn't show dark/light " +
-                "seams between tiles captured at different times. Client-only.",
+                "If enabled, captures render the map as if at noon regardless of " +
+                "the in-game time of day. Keeps brightness consistent so a " +
+                "multi-tile compiled map doesn't show dark/light seams between " +
+                "tiles captured at different times, and gives SEND/COPY a " +
+                "stable look across an in-game day. Applies to every capture " +
+                "path (texture and screen, SEND/COPY and compile). Disable to " +
+                "have captures reflect the live time of day. Client-only.",
                 synced: false);
 
             EnableCartographyTableLabels = Config.BindConfig(

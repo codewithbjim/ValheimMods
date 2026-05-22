@@ -163,7 +163,7 @@ These settings are server-synced (a host enforces one look for everyone):
 - [BepInEx Pack for Valheim 5.4.2333](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/) (declared in the manifest)
 - [JsonDotNET 13.0.4](https://thunderstore.io/c/valheim/p/ValheimModding/JsonDotNET/) (declared in the manifest) — used to persist compile sessions to disk
 - [Jotunn 2.29.0](https://thunderstore.io/c/valheim/p/ValheimModding/Jotunn/) (declared in the manifest) — provides the server-authoritative config sync (`SynchronizationManager`). ZenMap already depends on Jotunn, so most setups already have it
-- [ZenMap ≥ 1.7.4](https://thunderstore.io/c/valheim/p/ZenDragon/ZenMap/) (declared in the manifest) — required for MAP COMPILE. Recent ZenMap also fixes a `Graphics.CopyTexture` size-mismatch error on expanded worlds (e.g. a 4× map); update ZenMap if you see that error
+- [ZenMap ≥ 1.7.6](https://thunderstore.io/c/valheim/p/ZenDragon/ZenMap/) (declared in the manifest) — required for MAP COMPILE. Recent ZenMap also fixes a `Graphics.CopyTexture` size-mismatch error on expanded worlds (e.g. a 4× map); update ZenMap if you see that error
 
 ---
 

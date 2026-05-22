@@ -1,12 +1,19 @@
+using System.Collections;
 using UnityEngine;
 
 namespace NoMapDiscordAdditions.MapCompile
 {
     /// <summary>
-    /// Wrapper around <see cref="MapCaptureTexture"/> that also records the
-    /// world-space rect a tile covers. Snapshots <c>m_mapImageLarge.uvRect</c>
-    /// up front so the rect always matches what was actually rendered, even
-    /// if anything else mutates the uvRect mid-frame.
+    /// Captures one compile tile — PNG bytes plus the world-space rect they
+    /// cover. Snapshots <c>m_mapImageLarge.uvRect</c> up front so the rect
+    /// always matches what was actually rendered.
+    ///
+    /// Honours the global <c>Capture Method</c> config: screen-capture by
+    /// default (the simpler path — uses what the player sees, no shader
+    /// re-render), texture-capture for the off-screen render variant. Both
+    /// produce a PNG covering the clamped-uv span (matches
+    /// <see cref="MapCompileTile.ComputeWorldRect"/>'s world rect) so the
+    /// compositor can mix tiles from either path without alignment drift.
     /// </summary>
     public static class MapCompileCapture
     {
@@ -26,51 +33,144 @@ namespace NoMapDiscordAdditions.MapCompile
             public bool FullyMapped;
         }
 
-        public static bool TryCapture(out Result result)
+        /// <summary>
+        /// Capture one tile, branching on the global Capture Method config.
+        /// Coroutine because the screen-capture path needs <c>WaitForEndOfFrame</c>
+        /// after hiding the UI. <paramref name="callback"/> receives the
+        /// <see cref="Result"/> on success or <c>null</c> on any failure.
+        /// </summary>
+        public static IEnumerator Capture(System.Action<Result?> callback)
         {
-            result = default;
-
             var minimap = Minimap.instance;
             if (minimap == null || minimap.m_mapImageLarge == null)
             {
                 ModLog.Warn("[NoMapDiscordAdditions] Compile capture: Minimap unavailable.");
-                return false;
+                callback?.Invoke(null);
+                yield break;
             }
             if (minimap.m_mode != Minimap.MapMode.Large)
             {
                 ModLog.Warn("[NoMapDiscordAdditions] Compile capture: large map not active.");
-                return false;
+                callback?.Invoke(null);
+                yield break;
             }
 
             // Snapshot uvRect BEFORE the capture so the rect we record matches
-            // exactly what gets rasterized — DrawMapBase reads the same uvRect
-            // synchronously inside CaptureMap, so they stay consistent.
+            // exactly what gets rasterized. World rect + FullyMapped are
+            // derived here so both capture paths share identical metadata.
             Rect uv = minimap.m_mapImageLarge.uvRect;
+            MapCompileTile.ComputeWorldRect(minimap, uv, out var wmin, out var wmax);
+            bool fully = IsFullyMapped(minimap, uv);
 
-            // Never bake captions into compile tiles — they'd be eaten by the
-            // chroma-pick where tiles overlap. Compile mode stamps labels once
-            // onto the finished composite instead (see MapCompileLabelStamp,
-            // gated by Pin Label "Show on Compile Mode" + "Enabled").
-            byte[] png = MapCaptureTexture.CaptureMap(includePinLabels: false);
+            if (ModHelpers.EffectiveConfig.UseTextureCapture)
+            {
+                yield return new WaitForEndOfFrame();
+
+                // Re-verify mode after the yield — the player can close the
+                // map during the frame and Minimap can tear down references.
+                if (Minimap.instance == null
+                    || Minimap.instance.m_mode != Minimap.MapMode.Large)
+                {
+                    callback?.Invoke(null);
+                    yield break;
+                }
+
+                callback?.Invoke(CaptureTexture(uv, wmin, wmax, fully));
+            }
+            else
+            {
+                byte[] png = null;
+                int w = 0, h = 0;
+                // Screen capture handles its own UI hide + WaitForEndOfFrame
+                // (see MapCapture.CaptureVisibleMap). cropToClampedUv keeps the
+                // PNG aligned with the world rect ComputeWorldRect produced;
+                // includePinLabels=false matches the texture path — labels
+                // stamp once on the composite. Lighting normalization is read
+                // from the config inside CaptureVisibleMap itself.
+                yield return MapCapture.CaptureVisibleMap(
+                    data => png = data,
+                    cropToClampedUv: true,
+                    includePinLabels: false,
+                    sizeCallback: (cw, ch) => { w = cw; h = ch; });
+
+                if (png == null || w <= 0 || h <= 0)
+                {
+                    ModLog.Warn("[NoMapDiscordAdditions] Compile capture: screen capture returned no data.");
+                    callback?.Invoke(null);
+                    yield break;
+                }
+
+                callback?.Invoke(new Result
+                {
+                    Png = png,
+                    Width = w,
+                    Height = h,
+                    WorldMin = wmin,
+                    WorldMax = wmax,
+                    FullyMapped = fully,
+                });
+            }
+        }
+
+        // Texture-capture branch. Renders the map shader off-screen at a
+        // 4K-class longest edge sized to the clamped-uv aspect so the
+        // composite has isotropic per-tile density. Kept available as the
+        // alternative to screen capture (config: Capture Method = Texture).
+        private static Result? CaptureTexture(Rect uv, Vector2 wmin, Vector2 wmax, bool fully)
+        {
+            // Size the off-screen target to the clamped-uv aspect so DrawMapBase
+            // (which rasterizes the CLAMPED uv across the whole buffer) doesn't
+            // waste pixels on the long axis — see the long-form rationale that
+            // used to live here and now lives in the class comment.
+            float cuW = Mathf.Clamp01(uv.xMax) - Mathf.Clamp01(uv.xMin);
+            float cuH = Mathf.Clamp01(uv.yMax) - Mathf.Clamp01(uv.yMin);
+            int capW, capH;
+            if (cuW > 1e-6f && cuH > 1e-6f)
+            {
+                float aspect = cuW / cuH;
+                if (aspect >= 1f)
+                {
+                    capW = TileMaxDim;
+                    capH = Mathf.Max(64, Mathf.RoundToInt(TileMaxDim / aspect));
+                }
+                else
+                {
+                    capH = TileMaxDim;
+                    capW = Mathf.Max(64, Mathf.RoundToInt(TileMaxDim * aspect));
+                }
+            }
+            else
+            {
+                capW = MapCaptureTexture.OutputWidth;
+                capH = MapCaptureTexture.OutputHeight;
+            }
+
+            byte[] png = MapCaptureTexture.CaptureMap(capW, capH, includePinLabels: false);
             if (png == null)
             {
                 ModLog.Warn("[NoMapDiscordAdditions] Compile capture: MapCaptureTexture returned null.");
-                return false;
+                return null;
             }
 
-            MapCompileTile.ComputeWorldRect(minimap, uv, out var wmin, out var wmax);
-
-            result = new Result
+            return new Result
             {
                 Png = png,
-                Width = MapCaptureTexture.OutputWidth,
-                Height = MapCaptureTexture.OutputHeight,
+                Width = capW,
+                Height = capH,
                 WorldMin = wmin,
                 WorldMax = wmax,
-                FullyMapped = IsFullyMapped(minimap, uv),
+                FullyMapped = fully,
             };
-            return true;
         }
+
+        // 4K-class longest edge per texture-capture tile, matching the
+        // CTRL+COPY full-res cap in Plugin.cs. Downstream composite ceilings
+        // still apply (Discord/COPY cap, native SAVE clamps at 8192) so this
+        // only sets how much real detail each tile carries IN — not the final
+        // output size. Screen-capture tile size is driven by the player's
+        // screen × CaptureSuperSize instead, which gives equivalent density on
+        // typical 1440p/4K setups without needing its own constant.
+        private const int TileMaxDim = 4096;
 
         /// <summary>
         /// Decides the tile's <see cref="Result.FullyMapped"/> flag.
