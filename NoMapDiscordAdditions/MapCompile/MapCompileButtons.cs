@@ -32,6 +32,13 @@ namespace NoMapDiscordAdditions.MapCompile
         private static TextMeshProUGUI _btn1Text, _btn2Text, _btn3Text, _btn4Text, _btn5Text;
 
         private static bool _composeInProgress;
+        // Styled tile captures run a Map Style pipeline off-thread (~hundreds
+        // of ms to a second per tile) — long enough for the player to spam
+        // ADD TILE if there's no visible feedback. This flag drives the same
+        // disable + re-label treatment _composeInProgress does, so every
+        // compile-panel button greys out and ADD TILE shows "CAPTURING TILE..."
+        // until the in-flight capture finishes.
+        private static bool _captureInProgress;
 
         // Last sampled R-CTRL state for the CLEAR gate. Tracked so the
         // per-frame driver only touches Unity objects when it actually flips.
@@ -279,22 +286,33 @@ namespace NoMapDiscordAdditions.MapCompile
         private static void LayoutCompiling()
         {
             int n = MapCompileSession.Tiles.Count;
+            bool busy = _composeInProgress || _captureInProgress;
 
             _btn1.gameObject.SetActive(true);
-            _btn1Text.text = MapCompileSession.CanAddTile
-                ? (MapCompileSession.ActiveTableAlreadyAdded
-                    ? $"UPDATE TILE ({n})"
-                    : $"ADD TILE ({n})")
-                : "ADD TILE — go to a table";
-            _btn1.GetComponent<RectTransform>().sizeDelta =
-                new Vector2(MapCompileSession.CanAddTile ? ActionBtnWidth : 240f, BtnHeight);
-            _btn1.interactable = MapCompileSession.CanAddTile && !_composeInProgress;
+            // While a capture is in flight, the ADD TILE button doubles as a
+            // progress indicator — the label changes and the button greys out
+            // along with the rest of the panel.
+            _btn1Text.text = _captureInProgress
+                ? "CAPTURING TILE..."
+                : MapCompileSession.CanAddTile
+                    ? (MapCompileSession.ActiveTableAlreadyAdded
+                        ? $"UPDATE TILE ({n})"
+                        : $"ADD TILE ({n})")
+                    : "ADD TILE — go to a table";
+            // The progress label is longer than the normal ADD TILE label, so
+            // widen the button when it's showing (mirrors the "go to a table"
+            // case below).
+            float btn1W = _captureInProgress || !MapCompileSession.CanAddTile
+                ? 240f
+                : ActionBtnWidth;
+            _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(btn1W, BtnHeight);
+            _btn1.interactable = MapCompileSession.CanAddTile && !busy;
             _btn1.onClick.AddListener(OnAddTileClicked);
 
             _btn2.gameObject.SetActive(true);
             _btn2Text.text = $"COMPILE ({n})";
             _btn2.GetComponent<RectTransform>().sizeDelta = new Vector2(ActionBtnWidth, BtnHeight);
-            _btn2.interactable = n > 0 && !_composeInProgress;
+            _btn2.interactable = n > 0 && !busy;
             _btn2.onClick.AddListener(OnCompileClicked);
 
             // SHARE: export every tile (incl. previously-imported) as
@@ -308,14 +326,14 @@ namespace NoMapDiscordAdditions.MapCompile
                 bool webhookSet = !string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl);
                 _btn3Text.text = webhookSet ? $"SHARE ({n})" : $"EXPORT ({n})";
                 _btn3.GetComponent<RectTransform>().sizeDelta = new Vector2(ActionBtnWidth, BtnHeight);
-                _btn3.interactable = n > 0 && !_composeInProgress;
+                _btn3.interactable = n > 0 && !busy;
                 _btn3.onClick.AddListener(OnShareClicked);
             }
 
             _btn4.gameObject.SetActive(true);
             _btn4Text.text = "CANCEL";
             _btn4.GetComponent<RectTransform>().sizeDelta = new Vector2(110f, BtnHeight);
-            _btn4.interactable = !_composeInProgress;
+            _btn4.interactable = !busy;
             _btn4.onClick.AddListener(() => MapCompileSession.Suspend());
 
             ShowClearButton(true);
@@ -347,13 +365,13 @@ namespace NoMapDiscordAdditions.MapCompile
             if (!force && held == _clearGateHeld) return;
 
             _clearGateHeld = held;
-            _btn5.interactable = held && !_composeInProgress;
+            _btn5.interactable = held && !_composeInProgress && !_captureInProgress;
             _btn5Text.text = held ? "CLEAR" : "CLEAR (L-CTRL)";
         }
 
         private static void OnClearClicked()
         {
-            if (_composeInProgress) return;
+            if (_composeInProgress || _captureInProgress) return;
             // Belt-and-braces: the gate already keeps the button non-interactable
             // without L-CTRL; re-check at click time anyway so a synthetic/queued
             // click can't slip through.
@@ -373,7 +391,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
         private static void OnShareClicked()
         {
-            if (_composeInProgress) return;
+            if (_composeInProgress || _captureInProgress) return;
             if (MapCompileSession.Tiles.Count == 0)
             {
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
@@ -385,14 +403,21 @@ namespace NoMapDiscordAdditions.MapCompile
 
         private static void OnAddTileClicked()
         {
+            // Re-entry guard: the styled-tile path can take a noticeable
+            // moment, and a player will repeat-click ADD TILE if there's
+            // no visible feedback. Drop subsequent clicks while a capture
+            // (or compose) is in flight — the layout also greys the button,
+            // but a button OnClick listener can still fire if it was queued
+            // before the layout refresh ran, so guard at the entry point too.
+            if (_captureInProgress || _composeInProgress) return;
             if (!MapCompileSession.CanAddTile) return;
             var plugin = Plugin.Instance;
             if (plugin == null) return;
 
             // MapCompileCapture.Capture owns its own WaitForEndOfFrame timing
             // (the screen-capture path must hide UI before the next frame
-            // renders; the texture path doesn't need to wait at all). Just
-            // hand it the callback.
+            // renders; the texture and styled paths don't need to wait at
+            // all). Just hand it the callback.
             plugin.StartCoroutine(CaptureTileCoroutine());
         }
 
@@ -404,26 +429,44 @@ namespace NoMapDiscordAdditions.MapCompile
             if (!MapCompileSession.CanAddTile) yield break;
             Vector3 tablePos = MapCompileSession.ActiveTablePos.Value;
 
-            MapCompileCapture.Result? result = null;
-            yield return MapCompileCapture.Capture(r => result = r);
+            // Flip the in-progress flag immediately so a second click can't
+            // start a parallel capture; try/finally guarantees the flag clears
+            // even if the coroutine is stopped (map closed, scene change).
+            _captureInProgress = true;
+            try
+            {
+                RefreshLayout();
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    MapStyleRender.IsStyleActive()
+                        ? "Rendering styled tile..."
+                        : "Capturing tile...");
 
-            if (result.HasValue)
-            {
-                var r = result.Value;
-                MapCompileSession.AddTile(
-                    r.Png, r.Width, r.Height,
-                    r.WorldMin, r.WorldMax, tablePos,
-                    r.FullyMapped);
+                MapCompileCapture.Result? result = null;
+                yield return MapCompileCapture.Capture(r => result = r);
+
+                if (result.HasValue)
+                {
+                    var r = result.Value;
+                    MapCompileSession.AddTile(
+                        r.Png, r.Width, r.Height,
+                        r.WorldMin, r.WorldMax, tablePos,
+                        r.FullyMapped);
+                }
+                else
+                {
+                    Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Tile capture failed.");
+                }
             }
-            else
+            finally
             {
-                Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Tile capture failed.");
+                _captureInProgress = false;
+                RefreshLayout();
             }
         }
 
         private static void OnCompileClicked()
         {
-            if (_composeInProgress) return;
+            if (_composeInProgress || _captureInProgress) return;
             if (MapCompileSession.Tiles.Count == 0)
             {
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "No tiles to compile.");

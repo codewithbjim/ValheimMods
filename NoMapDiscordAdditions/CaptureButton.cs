@@ -139,11 +139,48 @@ namespace NoMapDiscordAdditions
                 plugin.TriggerClipboardCopy();
             });
 
+            // Mirror the global send/copy state into the buttons so a running
+            // capture flips them into a disabled "SENDING..." / "COPYING..."
+            // label. -= first because Create() can run again after a scene
+            // rebuild, and stacking handlers would multi-fire.
+            Plugin.SendingStateChanged -= RefreshLoadingState;
+            Plugin.SendingStateChanged += RefreshLoadingState;
+
             _containerObj.SetActive(true);
             RefreshEnabledState();
             RefreshBiomeToggleState();
+            RefreshLoadingState();
 
             ModLog.Info("[NoMapDiscordAdditions] Map button container created.");
+        }
+
+        /// <summary>
+        /// Reads <see cref="Plugin.IsSendingInProgress"/> + CurrentSendingOp
+        /// and flips the buttons into a loading state while a Send/Copy is in
+        /// flight: both buttons disable so the player can't queue duplicates,
+        /// and the one matching the current op swaps to a verb label
+        /// ("SENDING..." or "COPYING..."). Restores the normal hotkey labels
+        /// and interactability when the capture finishes. Idempotent — safe to
+        /// call from any refresh path.
+        /// </summary>
+        public static void RefreshLoadingState()
+        {
+            if (_captureBtn == null || _clipboardBtn == null) return;
+            if (_captureBtnText == null || _clipboardBtnText == null) return;
+
+            bool busy = Plugin.IsSendingInProgress;
+            Plugin.SendingOp op = Plugin.CurrentSendingOp;
+            bool webhookSet = !string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl);
+
+            _captureBtn.interactable = !busy && webhookSet;
+            _clipboardBtn.interactable = !busy;
+
+            _captureBtnText.text = busy && op == Plugin.SendingOp.Send
+                ? "SENDING..."
+                : BuildSendLabel();
+            _clipboardBtnText.text = busy && op == Plugin.SendingOp.Copy
+                ? "COPYING..."
+                : BuildCopyLabel();
         }
 
         /// <summary>
@@ -212,7 +249,13 @@ namespace NoMapDiscordAdditions
             if (_containerObj == null) return;
             _containerObj.SetActive(visible);
             if (visible)
+            {
                 RefreshEnabledState();
+                // Re-sync the loading state on every re-show: a capture
+                // started while the map was closed (or the panel hidden) is
+                // still in flight, and the buttons should reflect that.
+                RefreshLoadingState();
+            }
         }
 
         /// <summary>

@@ -13,6 +13,7 @@
     <ValheimPublicizedDir>$(ValheimManagedDir)\publicized_assemblies</ValheimPublicizedDir>
     <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
     <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
+    <ValheimCopyPluginsDir>E:\ValheimMods\Valheim v0.221.12\Valheim\BepInEx\scripts</ValheimCopyPluginsDir>
     <JsonDotNetDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-JsonDotNET\Newtonsoft.Json.dll</JsonDotNetDll>
     <JotunnDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-Jotunn\Jotunn.dll</JotunnDll>
     <TSPluginsDir>E:\ValheimMods\ValheimMods\NoMapDiscordAdditions\Thunderstore\plugins</TSPluginsDir>
@@ -28,6 +29,18 @@
           DestinationFolder="$(ProfilePluginsDir)"
           SkipUnchangedFiles="false" />
     <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ProfilePluginsDir)" />
+  </Target>
+
+  <Target Name="CopyToValheimCopyPlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
+    <MakeDir Directories="$(ValheimCopyPluginsDir)" Condition="!Exists('$(ValheimCopyPluginsDir)')" />
+    <ItemGroup>
+      <_DeployFiles Include="$(TargetPath)" />
+      <_DeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DeployFiles)"
+          DestinationFolder="$(ValheimCopyPluginsDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ValheimCopyPluginsDir)" />
   </Target>
 
   <Target Name="CopyToThunderstorePlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">

@@ -62,6 +62,19 @@ namespace NoMapDiscordAdditions.MapCompile
             MapCompileTile.ComputeWorldRect(minimap, uv, out var wmin, out var wmax);
             bool fully = IsFullyMapped(minimap, uv);
 
+            // When a Map Style is selected it overrides the Capture Method
+            // config — the screen-capture path screenshots the unstyled live
+            // map and can't substitute a styled base, so we always go through
+            // an off-screen texture render with the stylized texture handed in
+            // as the base layer (same pattern as Plugin.CaptureTextureWithStyle).
+            if (MapStyleRender.IsStyleActive())
+            {
+                Result? styledResult = null;
+                yield return CaptureStyledTile(uv, wmin, wmax, fully, r => styledResult = r);
+                callback?.Invoke(styledResult);
+                yield break;
+            }
+
             if (ModHelpers.EffectiveConfig.UseTextureCapture)
             {
                 yield return new WaitForEndOfFrame();
@@ -163,6 +176,89 @@ namespace NoMapDiscordAdditions.MapCompile
             };
         }
 
+        // Styled-tile branch. Renders the active Map Style off the main thread
+        // for this tile's viewport, then hands the texture to CaptureMap as the
+        // base layer — so the PNG is the stylized terrain with the normal pin
+        // overlay on top, exactly like Plugin.CaptureTextureWithStyle but tile-
+        // sized. Tile dimensions follow the same clamped-uv aspect rule as the
+        // unstyled texture path so the composite stitches cleanly.
+        private static IEnumerator CaptureStyledTile(Rect uv,
+            Vector2 wmin, Vector2 wmax, bool fully,
+            System.Action<Result?> callback)
+        {
+            float cuW = Mathf.Clamp01(uv.xMax) - Mathf.Clamp01(uv.xMin);
+            float cuH = Mathf.Clamp01(uv.yMax) - Mathf.Clamp01(uv.yMin);
+            int capW, capH;
+            if (cuW > 1e-6f && cuH > 1e-6f)
+            {
+                float aspect = cuW / cuH;
+                if (aspect >= 1f)
+                {
+                    capW = TileMaxDim;
+                    capH = Mathf.Max(64, Mathf.RoundToInt(TileMaxDim / aspect));
+                }
+                else
+                {
+                    capH = TileMaxDim;
+                    capW = Mathf.Max(64, Mathf.RoundToInt(TileMaxDim * aspect));
+                }
+            }
+            else
+            {
+                capW = MapCaptureTexture.OutputWidth;
+                capH = MapCaptureTexture.OutputHeight;
+            }
+
+            // Render the styled base at a moderate internal resolution scaled
+            // down from the tile size; the GPU blit in DrawStyledBase upsizes
+            // it to capW × capH effectively for free. See StyledRenderMaxDim
+            // for the cost/quality rationale.
+            int styledW = capW, styledH = capH;
+            int longest = Mathf.Max(capW, capH);
+            if (longest > StyledRenderMaxDim)
+            {
+                float k = (float)StyledRenderMaxDim / longest;
+                styledW = Mathf.Max(64, Mathf.RoundToInt(capW * k));
+                styledH = Mathf.Max(64, Mathf.RoundToInt(capH * k));
+            }
+
+            Texture2D styled = null;
+            yield return MapStyleRender.BuildAsync(uv, styledW, styledH, t => styled = t);
+
+            // The Map may have torn down during the render (player closes it,
+            // or scene change) — bail before touching Minimap again.
+            if (Minimap.instance == null
+                || Minimap.instance.m_mode != Minimap.MapMode.Large)
+            {
+                if (styled != null) Object.Destroy(styled);
+                callback?.Invoke(null);
+                yield break;
+            }
+
+            // CaptureMap tolerates a null styled base (falls back to a default
+            // texture render) — that keeps the composite usable even if the
+            // style pipeline failed for one tile.
+            byte[] png = MapCaptureTexture.CaptureMap(capW, capH, includePinLabels: false, styled);
+            if (styled != null) Object.Destroy(styled);
+
+            if (png == null)
+            {
+                ModLog.Warn("[NoMapDiscordAdditions] Compile capture (styled): MapCaptureTexture returned null.");
+                callback?.Invoke(null);
+                yield break;
+            }
+
+            callback?.Invoke(new Result
+            {
+                Png = png,
+                Width = capW,
+                Height = capH,
+                WorldMin = wmin,
+                WorldMax = wmax,
+                FullyMapped = fully,
+            });
+        }
+
         // 4K-class longest edge per texture-capture tile, matching the
         // CTRL+COPY full-res cap in Plugin.cs. Downstream composite ceilings
         // still apply (Discord/COPY cap, native SAVE clamps at 8192) so this
@@ -171,6 +267,17 @@ namespace NoMapDiscordAdditions.MapCompile
         // screen × CaptureSuperSize instead, which gives equivalent density on
         // typical 1440p/4K setups without needing its own constant.
         private const int TileMaxDim = 4096;
+
+        // Per-tile cap on the internal resolution the Map Style pipeline runs
+        // at. The styled output is intrinsically low-frequency content
+        // (the biome blur, shallow-water field, and final SmoothImage all
+        // wash out fine detail anyway) so DrawStyledBase's GPU bilinear blit
+        // up to TileMaxDim is visually indistinguishable from a native render
+        // — but the pipeline cost (8-10 Color32[w*h] arrays plus a stack of
+        // O(n) passes) drops ~7x at 1536² vs 4096², which is the difference
+        // between an ADD TILE that feels instant and one that stalls for
+        // close to a second.
+        private const int StyledRenderMaxDim = 1536;
 
         /// <summary>
         /// Decides the tile's <see cref="Result.FullyMapped"/> flag.

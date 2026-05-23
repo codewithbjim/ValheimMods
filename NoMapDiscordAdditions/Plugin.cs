@@ -20,9 +20,18 @@ namespace NoMapDiscordAdditions
             ScreenCapture
         }
 
+        public enum MapStyleMode
+        {
+            None,
+            OldMap,
+            Chart,
+            Topographical,
+            Satellite
+        }
+
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.0.8";
+        public const string PluginVersion = "1.0.9";
 
         public static Plugin Instance { get; private set; }
         public static ConfigEntry<string> WebhookUrl;
@@ -32,6 +41,7 @@ namespace NoMapDiscordAdditions
         public static ConfigEntry<KeyCode> CopyKey;
         public static ConfigEntry<KeyCode> CopyFullResModifier;
         public static ConfigEntry<CaptureMethodMode> CaptureMethod;
+        public static ConfigEntry<MapStyleMode> MapStyle;
         public static ConfigEntry<bool> SpoilerImageData;
         public static ConfigEntry<bool> HideClouds;
         public static ConfigEntry<bool> ShowBiomeText;
@@ -49,7 +59,38 @@ namespace NoMapDiscordAdditions
         public static ConfigEntry<bool> EnableLogs;
 
         private Harmony _harmony;
-        private bool _sendingInProgress;
+
+        // ── Send/Copy in-flight state ───────────────────────────────────────
+        // Backed by a private bool but exposed through a property so the setter
+        // can fan a state-change event out to the UI. The Send Map / Copy Map
+        // buttons subscribe to SendingStateChanged so they can switch into a
+        // loading label + disabled state while a capture is running (the work
+        // can take noticeable wall time, especially with a Map Style active or
+        // a full-resolution copy). CurrentSendingOp lets each button show the
+        // right verb (SENDING / COPYING) instead of a generic "BUSY".
+        public enum SendingOp { None, Send, Copy }
+        public static SendingOp CurrentSendingOp { get; private set; } = SendingOp.None;
+        public static bool IsSendingInProgress { get; private set; }
+        public static event System.Action SendingStateChanged;
+
+        private bool _sendingInProgressBacking;
+        private bool _sendingInProgress
+        {
+            get => _sendingInProgressBacking;
+            set
+            {
+                if (_sendingInProgressBacking == value) return;
+                _sendingInProgressBacking = value;
+                IsSendingInProgress = value;
+                if (!value) CurrentSendingOp = SendingOp.None;
+                try { SendingStateChanged?.Invoke(); }
+                catch (System.Exception ex)
+                {
+                    // A misbehaving subscriber must not break the capture path.
+                    ModLog.Warn($"[NoMapDiscordAdditions] SendingStateChanged listener threw: {ex.Message}");
+                }
+            }
+        }
 
         private void Awake()
         {
@@ -141,6 +182,20 @@ namespace NoMapDiscordAdditions
                 "stable look across an in-game day. Applies to every capture " +
                 "path (texture and screen, SEND/COPY and compile). Disable to " +
                 "have captures reflect the live time of day. Client-only.",
+                synced: false);
+
+            MapStyle = Config.BindConfig(
+                "Map Style", "Style", MapStyleMode.Topographical,
+                "Optional stylized rendering for SEND / COPY map captures, " +
+                "reconstructed from Valheim's own map data — explored areas show " +
+                "detail, unexplored areas stay fogged. " +
+                "None: the normal in-game map look. " +
+                "Old Map: aged-parchment chart (biome wash, Perlin grain, contour & biome-edge lines). " +
+                "Chart: flat topographic chart with contour & biome-edge lines. " +
+                "Topographical: shaded-relief terrain with hillshading, contours & biome-edge lines. " +
+                "Satellite: naturalistic shaded terrain, no line work. " +
+                "A styled capture always uses the texture-capture path and is " +
+                "not applied to MAP COMPILE tiles. Client-only.",
                 synced: false);
 
             EnableCartographyTableLabels = Config.BindConfig(
@@ -289,9 +344,16 @@ namespace NoMapDiscordAdditions
             if (_sendingInProgress)
                 return;
 
+            // Tag the op BEFORE flipping the flag — the property setter fires
+            // SendingStateChanged once the flag changes, and subscribers read
+            // CurrentSendingOp to decide which button label to swap.
+            CurrentSendingOp = SendingOp.Copy;
             _sendingInProgress = true;
             bool fullResolution = IsFullResModifierHeld();
-            bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture;
+            // A selected Map Style is rendered into the texture-capture base,
+            // so it forces the texture path regardless of the Capture Method.
+            bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture
+                || MapStyleRender.IsStyleActive();
             StartCoroutine(preferTexture
                 ? CaptureAndCopyPreferTexture(fullResolution)
                 : CaptureAndCopyScreen(fullResolution));
@@ -335,23 +397,12 @@ namespace NoMapDiscordAdditions
             {
                 yield return new WaitForEndOfFrame();
 
-                byte[] imageData;
-                if (fullResolution)
-                {
-                    // Render at 4K-equivalent (max dim 4096, 16:9 aspect to match
-                    // the default 1920×1080) so CTRL+COPY actually produces a
-                    // high-resolution image. The shader runs at 4096×2304 fragments
-                    // and pin sprites are rasterized at the same scale, so detail
-                    // genuinely improves vs. just upscaling a 1920×1080 capture.
-                    int targetW = FullResolutionMaxDim;
-                    int targetH = FullResolutionMaxDim * MapCaptureTexture.OutputHeight
-                                  / MapCaptureTexture.OutputWidth;
-                    imageData = MapCaptureTexture.CaptureMap(targetW, targetH);
-                }
-                else
-                {
-                    imageData = MapCaptureTexture.CaptureMap();
-                }
+                // Capture sized to the player's resolution; CTRL (fullResolution)
+                // scales it up to the 4K-class cap. The map shader / styled base
+                // and pin sprites all rasterize at that resolution.
+                byte[] imageData = null;
+                yield return CaptureTextureWithStyle(
+                    fullResolution, includePinLabels: true, onResult: d => imageData = d);
 
                 if (imageData == null)
                     yield return MapCapture.CaptureVisibleMap(data => imageData = data);
@@ -695,8 +746,15 @@ namespace NoMapDiscordAdditions
             if (string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl))
                 return;
 
+            // Same Op-before-flag ordering as TriggerClipboardCopy — see the
+            // comment there for why subscribers need CurrentSendingOp set when
+            // SendingStateChanged fires.
+            CurrentSendingOp = SendingOp.Send;
             _sendingInProgress = true;
-            bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture;
+            // A selected Map Style is rendered into the texture-capture base,
+            // so it forces the texture path regardless of the Capture Method.
+            bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture
+                || MapStyleRender.IsStyleActive();
             StartCoroutine(preferTexture ? CaptureAndSendPreferTexture() : CaptureAndSendScreen());
         }
 
@@ -722,7 +780,9 @@ namespace NoMapDiscordAdditions
             {
                 // Texture capture path.
                 yield return new WaitForEndOfFrame();
-                byte[] imageData = MapCaptureTexture.CaptureMap();
+                byte[] imageData = null;
+                yield return CaptureTextureWithStyle(
+                    fullResolution: false, includePinLabels: true, onResult: d => imageData = d);
 
                 // Fallback to screen capture if texture path fails.
                 if (imageData == null)
@@ -733,6 +793,50 @@ namespace NoMapDiscordAdditions
             finally
             {
                 _sendingInProgress = false;
+            }
+        }
+
+        // Runs a texture capture sized to the player's resolution (the on-screen
+        // map rect), first building the stylized map base on a background thread
+        // when a Map Style is selected (passed to CaptureMap as the base layer —
+        // pins/markers/labels still overlay normally). With no style active this
+        // is a plain texture capture. fullResolution scales the output up so its
+        // longest edge reaches the CTRL+COPY cap. The styled texture is owned
+        // here and destroyed once the capture consumes it.
+        private System.Collections.IEnumerator CaptureTextureWithStyle(
+            bool fullResolution, bool includePinLabels, System.Action<byte[]> onResult)
+        {
+            MapCaptureTexture.GetDefaultCaptureSize(out int width, out int height);
+            if (fullResolution)
+            {
+                int longest = Mathf.Max(width, height);
+                if (longest > 0 && longest < FullResolutionMaxDim)
+                {
+                    float k = (float)FullResolutionMaxDim / longest;
+                    width = Mathf.RoundToInt(width * k);
+                    height = Mathf.RoundToInt(height * k);
+                }
+            }
+
+            Texture2D styled = null;
+            if (MapStyleRender.IsStyleActive())
+            {
+                var mapImage = Minimap.instance != null ? Minimap.instance.m_mapImageLarge : null;
+                if (mapImage != null)
+                {
+                    Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Rendering map style...");
+                    yield return MapStyleRender.BuildAsync(
+                        mapImage.uvRect, width, height, t => styled = t);
+                }
+            }
+
+            try
+            {
+                onResult(MapCaptureTexture.CaptureMap(width, height, includePinLabels, styled));
+            }
+            finally
+            {
+                if (styled != null) Object.Destroy(styled);
             }
         }
 

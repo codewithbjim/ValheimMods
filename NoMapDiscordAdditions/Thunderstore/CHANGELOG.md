@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.9
+
+### Map Style (new)
+
+- Added **`Map Style.Style`** (client-only) — optional stylized rendering for SEND / COPY captures, reconstructed from Valheim's own map data so explored areas show detail while unexplored stay fogged. Four modes:
+  - **Old Map** — aged-parchment chart with biome wash, Perlin grain, height-contour and biome-edge lines (a faithful reimplementation of ASpy's MapPrinter `GenerateOldMap` pipeline that reads directly from `Minimap` instead of rescanning the world)
+  - **Chart** — flat topographic chart with contour and biome-edge lines, no parchment grain
+  - **Topographical** — shaded-relief terrain with hillshading, contours and biome-edge lines (default)
+  - **Satellite** — naturalistic shaded terrain, no line work
+  - `None` (or removing the entry) keeps the normal in-game map look
+- A selected Map Style forces the **texture-capture** path for that capture (the screen-capture path screenshots the unstyled live map, so styling has to go through the offscreen render). Capture Method config is unchanged for `None`
+- **MAP COMPILE tiles also style** when `Map Style.Style` is non-`None` — each tile renders through the same pipeline at tile resolution and the composite stitches stylized terrain. Per-tile cap of `1536px` on the longest internal render edge keeps ADD TILE responsive (~7× cheaper than rendering at the full 4K tile size); the GPU bilinear blit to tile resolution is visually indistinguishable for the intrinsically low-frequency styled output
+- Render runs on a background thread — the per-pixel passes (biome blur, shallow-water field, hillshade, contour and biome-edge lines, final smoothing) would otherwise stall the game for a noticeable fraction of a second on a 2048² map texture. Layer read-back and the final `Texture2D` upload are on the main thread
+
+### Capture
+
+- The texture-capture path's default output now matches the **player's screen resolution** (measured off the large-map image rect) instead of a fixed `1920×1080`. SEND/COPY on a 1440p/4K screen produces noticeably sharper PNGs without needing CTRL+COPY; CTRL+COPY still upsizes to the 4096px full-resolution cap. Falls back to `1920×1080` when the rect can't be measured
+- **SEND MAP** and **COPY MAP** buttons now reflect in-flight state: while a capture is running, both buttons grey out and the one matching the current operation swaps its label to `SENDING...` / `COPYING...`. Restores hotkey labels and interactability when the capture finishes — useful since a styled or full-resolution capture can take noticeable wall time, and the previous silent button would let the player queue duplicate clicks
+
+### Map Compile
+
+- **ADD TILE** mirrors the same busy treatment — while a tile capture is in flight (including the styled-render path, which can take hundreds of ms per tile) the whole compile panel greys out and ADD TILE shows `CAPTURING TILE...`. Re-entry guard at the click handler too, so a button event queued before the layout refresh can't kick off a parallel capture
+- A center-screen message announces the capture (`Capturing tile...` or `Rendering styled tile...` when a Map Style is active) so there's an immediate response even before the button label updates
+
 ## 1.0.8
 
 ### Map Compile

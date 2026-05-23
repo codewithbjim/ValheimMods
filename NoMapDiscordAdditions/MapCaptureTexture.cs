@@ -15,11 +15,10 @@ namespace NoMapDiscordAdditions
     /// </summary>
     public static class MapCaptureTexture
     {
-        // ── Default output settings ─────────────────────────────────────────
-        // The parameterless CaptureMap() and per-tile compile capture both
-        // use these. CaptureMap(int, int) overrides them for callers (e.g.
-        // CTRL+COPY going to 4K) — every internal blit references the runtime
-        // values, not these constants.
+        // ── Fallback output size ────────────────────────────────────────────
+        // Used only when the on-screen map rect can't be measured (see
+        // GetDefaultCaptureSize) and as the compile degenerate-uv fallback.
+        // The normal default size is derived from the player's resolution.
         public const int OutputWidth = 1920;
         public const int OutputHeight = 1080;
 
@@ -58,11 +57,41 @@ namespace NoMapDiscordAdditions
         // ═══════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Captures the visible large map without the cloud overlay at the
-        /// default 1920×1080 output. Synchronous — does not require yielding
-        /// to end-of-frame.
+        /// The default capture size: the on-screen large-map image's pixel
+        /// dimensions — so a texture capture matches the player's resolution
+        /// instead of a fixed 1920×1080. Falls back to <see cref="OutputWidth"/>
+        /// × <see cref="OutputHeight"/> when the map rect can't be measured.
         /// </summary>
-        public static byte[] CaptureMap() => CaptureMap(OutputWidth, OutputHeight, true);
+        public static void GetDefaultCaptureSize(out int width, out int height)
+        {
+            width = OutputWidth;
+            height = OutputHeight;
+
+            var minimap = Minimap.instance;
+            if (minimap == null || minimap.m_mapImageLarge == null)
+                return;
+
+            var corners = new Vector3[4];
+            minimap.m_mapImageLarge.rectTransform.GetWorldCorners(corners);
+            int w = Mathf.RoundToInt(Mathf.Abs(corners[2].x - corners[0].x));
+            int h = Mathf.RoundToInt(Mathf.Abs(corners[2].y - corners[0].y));
+            if (w >= 64 && h >= 64)
+            {
+                width = w;
+                height = h;
+            }
+        }
+
+        /// <summary>
+        /// Captures the visible large map without the cloud overlay at the
+        /// player's resolution (see <see cref="GetDefaultCaptureSize"/>).
+        /// Synchronous — does not require yielding to end-of-frame.
+        /// </summary>
+        public static byte[] CaptureMap()
+        {
+            GetDefaultCaptureSize(out int w, out int h);
+            return CaptureMap(w, h, true);
+        }
 
         /// <summary>
         /// Default-resolution capture, with explicit control over whether the
@@ -70,8 +99,11 @@ namespace NoMapDiscordAdditions
         /// the labels can be gated by its own config independently of plain
         /// COPY/SEND captures.
         /// </summary>
-        public static byte[] CaptureMap(bool includePinLabels) =>
-            CaptureMap(OutputWidth, OutputHeight, includePinLabels);
+        public static byte[] CaptureMap(bool includePinLabels)
+        {
+            GetDefaultCaptureSize(out int w, out int h);
+            return CaptureMap(w, h, includePinLabels);
+        }
 
         /// <summary>
         /// Captures the visible large map at a custom output resolution.
@@ -81,7 +113,7 @@ namespace NoMapDiscordAdditions
         /// <paramref name="includePinLabels"/> gates the TMP caption pass.
         /// </summary>
         public static byte[] CaptureMap(int outputWidth, int outputHeight,
-            bool includePinLabels = true)
+            bool includePinLabels = true, Texture2D styledBase = null)
         {
             if (outputWidth < 64 || outputHeight < 64)
             {
@@ -128,12 +160,20 @@ namespace NoMapDiscordAdditions
             }
 
             // ── GPU pass: map base on a single RT ─────────────────────────────
+            // With a Map Style active the caller passes a pre-rendered stylized
+            // texture — already the captured viewport at output resolution — so
+            // we blit it straight in as the base in place of the shader pass.
+            // Pins/markers/labels below overlay it unchanged. styledBase is
+            // owned by the caller — not destroyed here.
             var cropRT = RenderTexture.GetTemporary(outputWidth, outputHeight, 0,
                 RenderTextureFormat.ARGB32);
             Color32[] output;
             try
             {
-                DrawMapBase(cropRT, mapTex, mat, mapImage.uvRect);
+                if (styledBase != null)
+                    DrawStyledBase(cropRT, styledBase);
+                else
+                    DrawMapBase(cropRT, mapTex, mat, mapImage.uvRect);
                 output = ReadRTPixels(cropRT);
             }
             finally
@@ -251,10 +291,10 @@ namespace NoMapDiscordAdditions
         //  Map base — render through the actual map material, then crop to viewport
         // ═══════════════════════════════════════════════════════════════════
 
-        // Render the map material directly at OutputWidth × OutputHeight by drawing
+        // Render the map material directly at the target RT size by drawing
         // a fullscreen quad whose texcoords are the cropped viewport. The shader
-        // runs at output resolution (1920×1080 fragments), each sampling textures at
-        // the right place — this gives screen-quality output regardless of zoom level.
+        // runs at output resolution (one fragment per output pixel), each sampling
+        // textures at the right place — screen-quality output regardless of zoom.
         // Cloud shader properties are temporarily zeroed for this single pass.
         private static void DrawMapBase(RenderTexture target, Texture2D mapTex, Material mat, Rect uv)
         {
@@ -319,6 +359,16 @@ namespace NoMapDiscordAdditions
                 if (savedClouds != null) ModHelpers.RestoreShaderProps(mat, savedClouds);
                 ModHelpers.RestoreLighting(savedLighting);
             }
+        }
+
+        // Blit the pre-rendered stylized map texture into the output RT. The
+        // styled texture already covers exactly the captured viewport (the
+        // clamped uvRect) at output resolution — the same framing DrawMapBase
+        // produces — so this is a straight 1:1 blit and pins, positioned via
+        // the same clamped-uv remap below, line up identically.
+        private static void DrawStyledBase(RenderTexture target, Texture2D styled)
+        {
+            Graphics.Blit(styled, target);
         }
 
         private static Color32[] ReadRTPixels(RenderTexture rt)

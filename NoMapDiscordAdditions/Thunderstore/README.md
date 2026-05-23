@@ -80,6 +80,20 @@ Leave the pin unnamed and nothing changes — captions and messages fall back to
 
 ---
 
+## Map styles
+
+`Map Style.Style` (client-only) replaces the live in-game map look with a stylized render for SEND / COPY captures **and** MAP COMPILE tiles, reconstructed from Valheim's own map data — explored areas show full detail, unexplored areas stay fogged. Five settings:
+
+- **None** — the normal in-game map look (no styling)
+- **Old Map** — aged-parchment chart: biome wash, Perlin grain, height-contour and biome-edge lines (a faithful reimplementation of ASpy's MapPrinter `GenerateOldMap` look)
+- **Chart** — flat topographic chart, contour and biome-edge lines, no parchment grain
+- **Topographical** *(default)* — shaded-relief terrain with hillshading, contours and biome-edge lines
+- **Satellite** — naturalistic shaded terrain, no line work
+
+A selected style forces the texture-capture path for that capture (the screen-capture path screenshots the unstyled live map, so styling has to go through the offscreen render). MAP COMPILE tiles render through the same pipeline at tile resolution and the composite stitches stylized terrain together. The per-pixel passes run on a background thread so the game doesn't stall during a capture.
+
+---
+
 ## Configuration
 
 ### Discord
@@ -101,6 +115,12 @@ Leave the pin unnamed and nothing changes — captions and messages fall back to
 | `General.Capture Super Size` | Screen-capture quality multiplier `1`–`4`. **Server-synced.** |
 | `General.Normalize Capture Lighting` | Render the map as if at noon in `TextureCapture` mode so tiles captured at different times of day don't produce dark/light seams in a compiled map; default `true`. Client-only. |
 | `General.Enable Logs` | Print info/warning messages to the BepInEx console and Player.log; default `false`. Turn on if you need to investigate a problem. |
+
+### Map Style
+
+| Key | Notes |
+|---|---|
+| `Map Style.Style` | Stylized rendering for SEND / COPY captures and MAP COMPILE tiles, reconstructed from Valheim's own map data. `None`, `OldMap`, `Chart`, `Topographical` (default), `Satellite` — see [Map styles](#map-styles) above. A selected style forces the texture-capture path for that capture. Client-only. |
 
 ### Map Compile
 
