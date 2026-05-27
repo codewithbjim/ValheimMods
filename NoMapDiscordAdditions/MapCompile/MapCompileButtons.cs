@@ -415,9 +415,8 @@ namespace NoMapDiscordAdditions.MapCompile
             if (plugin == null) return;
 
             // MapCompileCapture.Capture owns its own WaitForEndOfFrame timing
-            // (the screen-capture path must hide UI before the next frame
-            // renders; the texture and styled paths don't need to wait at
-            // all). Just hand it the callback.
+            // so the live map shader has rendered the current uvRect before
+            // we sample it.
             plugin.StartCoroutine(CaptureTileCoroutine());
         }
 
@@ -487,13 +486,16 @@ namespace NoMapDiscordAdditions.MapCompile
             // Snapshot tile list — session state may change if Discard runs
             // before this completes (we ignore that and finish anyway).
             var tilesSnapshot = new System.Collections.Generic.List<MapCompileTile>(MapCompileSession.Tiles);
-            int maxDim = ModHelpers.EffectiveConfig.CompileMaxDimension;
+            // Hardcoded preview cap — 4096 keeps the compile preview snappy to
+            // recode for COPY / SEND while still covering large compositions
+            // at usable density. SAVE uses ComposeNative which goes up to 8192.
+            const int maxDim = 4096;
 
-            // Build the captions on the main thread (SpawnDirection reads
-            // ZoneSystem). Drawn once onto the finished composite rather than
-            // baked per tile — baked captions lose the per-tile chroma-pick in
-            // overlap regions, so only the first-painted tile kept them.
-            var labels = BuildCompileLabels(tilesSnapshot);
+            // Snapshot the currently visible Minimap pins on the main thread
+            // — the compose runs off-thread and can't touch Unity UI. Pins are
+            // stamped once on the finished composite (uniform size) instead of
+            // being baked into each tile capture.
+            var pins = MapCompilePinSnapshot.Capture(out float refScreenW);
 
             MapCompositor.CompiledMap result = null;
             System.Exception error = null;
@@ -527,8 +529,10 @@ namespace NoMapDiscordAdditions.MapCompile
                 yield break;
             }
 
-            // Stamp captions (Valheim TMP font, main thread) + encode the PNG.
-            yield return MapCompileLabelStamp.Finalize(result, labels);
+            // Stamp pin icons + names (Valheim TMP font, main thread) + encode.
+            // tilesSnapshot drives the per-tile pin clip so pins in the empty
+            // gaps between non-adjacent tiles don't stamp.
+            yield return MapCompileLabelStamp.Finalize(result, pins, tilesSnapshot, refScreenW);
 
             _composeInProgress = false;
 
@@ -542,51 +546,6 @@ namespace NoMapDiscordAdditions.MapCompile
 
             MapCompileSession.Finish();
             MapCompileResultPanel.Show(result);
-        }
-
-        /// <summary>
-        /// One "{pinName} — {dist}m {dir}" caption per local table for the given
-        /// tiles, gated by the Pin Label config. MUST be called on the main thread —
-        /// <see cref="SpawnDirection.GetLabelForPos"/> reads ZoneSystem.
-        /// Shared by the compose flow and the full-resolution SAVE recompose so
-        /// both stamp identical labels. Imported tiles have no table pos and
-        /// are skipped.
-        /// </summary>
-        internal static System.Collections.Generic.List<MapCompositor.LabelDraw> BuildCompileLabels(
-            System.Collections.Generic.IReadOnlyList<MapCompileTile> tiles)
-        {
-            var labels = new System.Collections.Generic.List<MapCompositor.LabelDraw>();
-            bool wantLabels = ModHelpers.EffectiveConfig.ShowPinLabelOnCompile
-                && ModHelpers.EffectiveConfig.EnableCartographyTableLabels;
-            if (!wantLabels || tiles == null) return labels;
-
-            foreach (var t in tiles)
-            {
-                if (t.IsImported) continue;
-
-                // Same composition as the live-map pin label: the table's pin
-                // name (captured at add time, persisted per tile) prefixes the
-                // spawn-direction caption. Either half may be absent — a named
-                // table near spawn stamps just its name, an unnamed far table
-                // just the direction, neither → no caption.
-                // Clean() (not just Trim) so sessions persisted before the
-                // ZenMap-tracking-suffix fix don't stamp "Name#<guid>".
-                string name = TablePinName.Clean(t.TableName);
-
-                string dir = SpawnDirection.GetLabelForPos(t.TableWorldPos);
-
-                string text =
-                    name != null && dir != null ? $"{name} — {dir}" :
-                    name ?? dir;
-                if (string.IsNullOrEmpty(text)) continue;
-                labels.Add(new MapCompositor.LabelDraw
-                {
-                    WorldX = t.TableWorldPos.x,
-                    WorldZ = t.TableWorldPos.z,
-                    Text = text,
-                });
-            }
-            return labels;
         }
 
         private static int CountSavedTiles()

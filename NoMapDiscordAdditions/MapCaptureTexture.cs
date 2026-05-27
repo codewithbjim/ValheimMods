@@ -90,19 +90,7 @@ namespace NoMapDiscordAdditions
         public static byte[] CaptureMap()
         {
             GetDefaultCaptureSize(out int w, out int h);
-            return CaptureMap(w, h, true);
-        }
-
-        /// <summary>
-        /// Default-resolution capture, with explicit control over whether the
-        /// per-pin "of Spawn" captions are baked in. Compile mode uses this so
-        /// the labels can be gated by its own config independently of plain
-        /// COPY/SEND captures.
-        /// </summary>
-        public static byte[] CaptureMap(bool includePinLabels)
-        {
-            GetDefaultCaptureSize(out int w, out int h);
-            return CaptureMap(w, h, includePinLabels);
+            return CaptureMap(w, h);
         }
 
         /// <summary>
@@ -110,10 +98,12 @@ namespace NoMapDiscordAdditions
         /// The shader runs at <paramref name="outputWidth"/> × <paramref name="outputHeight"/>
         /// fragments and pin sprites are rasterized in CPU at the same scale,
         /// so output is sharp regardless of zoom or input map size.
-        /// <paramref name="includePinLabels"/> gates the TMP caption pass.
+        /// <paramref name="drawPinIcons"/> gates the pin-icon overlay; compile
+        /// mode passes false so pins aren't baked into per-tile captures
+        /// (they're stamped once on the finished composite instead).
         /// </summary>
         public static byte[] CaptureMap(int outputWidth, int outputHeight,
-            bool includePinLabels = true, Texture2D styledBase = null)
+            Texture2D styledBase = null, bool drawPinIcons = true)
         {
             if (outputWidth < 64 || outputHeight < 64)
             {
@@ -194,34 +184,44 @@ namespace NoMapDiscordAdditions
             // viewport is fully inside [0,1] or degenerate.
             BeginUvRemap(mapImage.uvRect);
 
+            // Match the SEND screenshot path: hide Player/Death pins and
+            // strip rich-text from boss/location captions for the capture so
+            // the texture-mode SEND/COPY output mirrors the screenshot-mode
+            // SEND/COPY (and the compile composite). The LEFT CTRL "include
+            // filtered" override comes from the armed flag the button-click
+            // handler set — see PinCaptureFilter.ArmFromCurrentInput. Compile-
+            // mode tile capture (drawPinIcons=false) skips this — pins
+            // aren't blitted at all there, and the compile stamp pass already
+            // filters via its own snapshot.
+            PinCaptureFilter.State savedFilter = default;
+            if (drawPinIcons) savedFilter = PinCaptureFilter.Apply();
+
             try
             {
-                // Activate the per-pin "of Spawn" captions so they bake into
-                // the output, same as the screen-capture path does. Without
-                // this the texture path (used by compile mode) never showed
-                // them even with the label config enabled. Hidden again in
-                // the finally below. Compile mode passes includePinLabels=false
-                // to opt out via its own "Show on Compile Mode" config.
-                if (includePinLabels)
-                    TablePinLabel.ShowForCapture();
-
-                if (pinRoot != null)
+                // Compile mode passes drawPinIcons=false so the pin overlay
+                // doesn't get baked into the per-tile PNG — pins stamp once on
+                // the finished composite from a snapshot of the live pin list.
+                // The player marker / ship marker stay because they're
+                // ephemeral position indicators, not part of the composed map.
+                if (pinRoot != null && drawPinIcons)
                     BlitUIChildren(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, pinRoot);
+
+                // Pin captions live under m_pinNameRootLarge, NOT m_pinRootLarge,
+                // so the BlitUIChildren walk above only sees pin icons. Walk the
+                // name root here so boss / location / player-named captions
+                // render in the texture-mode capture too (matches what the
+                // screenshot path captures via the screen back-buffer).
+                if (minimap.m_pinNameRootLarge != null && drawPinIcons)
+                    BlitUIChildren(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, minimap.m_pinNameRootLarge);
 
                 BlitMarker(minimap.m_largeMarker, output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH);
                 BlitMarker(minimap.m_largeShipMarker, output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH);
-
-                // Spawn-direction text now lives in the Discord message
-                // ({spawnDir} placeholder) and on the in-game per-pin labels;
-                // burning a software-rasterized copy into the PNG produced an
-                // ugly bitmap-looking overlay, so this path is intentionally
-                // omitted.
 
                 return Encode(output, outputWidth, outputHeight);
             }
             finally
             {
-                TablePinLabel.HideAll();
+                PinCaptureFilter.Restore(savedFilter);
                 // Drop atlas references so unloaded textures can be GC'd.
                 _atlasCache.Clear();
                 EndUvRemap();
@@ -407,10 +407,16 @@ namespace NoMapDiscordAdditions
 
                 // TMP captions (the per-pin "of Spawn" labels) aren't Images,
                 // so the sprite blit above never sees them — rasterize their
-                // glyphs from the font atlas here.
+                // glyphs from the font atlas here. drawOutline=true: extend the
+                // SDF sample band past the 0.5 edge to paint a black halo
+                // around each glyph in a single pass, so pin captions stay
+                // readable over busy biome colours (snow plains, swamp). The
+                // live UI's TMP outline material isn't in the SDF atlas, so
+                // without this the caption renders as a flat unoutlined face.
                 var tmp = child.GetComponent<TMP_Text>();
                 if (tmp != null && tmp.enabled && !string.IsNullOrEmpty(tmp.text))
-                    BlitText(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, tmp);
+                    BlitText(output, outputWidth, outputHeight, mapMinX, mapMinY, mapW, mapH, tmp,
+                        drawOutline: true);
 
                 // Recurse — pin GameObjects sometimes nest icons under a wrapper.
                 if (child.childCount > 0)
@@ -542,7 +548,7 @@ namespace NoMapDiscordAdditions
         private static void BlitText(Color32[] output,
             int outputWidth, int outputHeight,
             float mapMinX, float mapMinY, float mapW, float mapH,
-            TMP_Text tmp, bool forceMeshUpdate = true)
+            TMP_Text tmp, bool forceMeshUpdate = true, bool drawOutline = false)
         {
             if (forceMeshUpdate) tmp.ForceMeshUpdate();
             var info = tmp.textInfo;
@@ -618,25 +624,45 @@ namespace NoMapDiscordAdditions
                         float d = dv / 255f;
 
                         // SDF edge ≈ 0.5; small band gives soft (not jaggy) edges.
-                        float cov = Mathf.Clamp01((d - 0.46f) / 0.08f);
-                        if (cov <= 0f) continue;
+                        // faceCov is the glyph interior (existing behaviour).
+                        // outlineCov is a wider band that extends past the edge
+                        // into the "outside" of the glyph (only used when
+                        // drawOutline=true) — painted black under the face for
+                        // a 1-pass halo. When drawOutline=false the two
+                        // coverages collapse and we're bit-for-bit identical
+                        // to the old single-threshold blit.
+                        float faceCov = Mathf.Clamp01((d - 0.46f) / 0.08f);
+                        float fullCov = drawOutline
+                            ? Mathf.Clamp01((d - 0.30f) / 0.08f)
+                            : faceCov;
+                        if (fullCov <= 0f) continue;
 
-                        int sa = (int)(cov * col.a);
+                        int sa = (int)(fullCov * col.a);
                         if (sa <= 0) continue;
+
+                        // Source colour: face colour weighted by how much of
+                        // the pixel falls inside the face vs the outline band.
+                        // Inside the glyph faceCov == fullCov so the original
+                        // colour is preserved; in the outline band faceCov is
+                        // zero so the source rgb collapses to black.
+                        float faceMix = drawOutline ? faceCov / fullCov : 1f;
+                        byte sr = (byte)(col.r * faceMix);
+                        byte sg = (byte)(col.g * faceMix);
+                        byte sb = (byte)(col.b * faceMix);
 
                         int di = dstRow + px;
                         Color32 dst = output[di];
                         if (sa >= 255)
                         {
-                            output[di] = new Color32(col.r, col.g, col.b, 255);
+                            output[di] = new Color32(sr, sg, sb, 255);
                         }
                         else
                         {
                             int ia = 255 - sa;
                             output[di] = new Color32(
-                                (byte)((col.r * sa + dst.r * ia) / 255),
-                                (byte)((col.g * sa + dst.g * ia) / 255),
-                                (byte)((col.b * sa + dst.b * ia) / 255),
+                                (byte)((sr * sa + dst.r * ia) / 255),
+                                (byte)((sg * sa + dst.g * ia) / 255),
+                                (byte)((sb * sa + dst.b * ia) / 255),
                                 255);
                         }
                     }
@@ -704,8 +730,91 @@ namespace NoMapDiscordAdditions
         // compile finalize step draw captions with Valheim's real SDF font
         // through the exact same glyph path the screen capture uses.
         internal static void RasterizeTmpInto(Color32[] buf, int w, int h, TMP_Text tmp,
-            bool forceMeshUpdate = true)
-            => BlitText(buf, w, h, 0f, 0f, w, h, tmp, forceMeshUpdate);
+            bool forceMeshUpdate = true, bool drawOutline = false)
+            => BlitText(buf, w, h, 0f, 0f, w, h, tmp, forceMeshUpdate, drawOutline);
+
+        // Stamp one sprite (a pin icon) into the same bottom-up RGBA buffer the
+        // label stamp uses. Direct world→composite mapping — no on-screen
+        // RectTransform, no uv-remap; the compile pin stamp computes the
+        // destination centre and size from the PinDraw + composite scale and
+        // hands them in here. Mirrors BlitImage's sampling/alpha-blend, just
+        // operating on the buffer instead of a Color32[] sized to a screen
+        // capture, so it shares the atlas cache and pays one GetPixels32 per
+        // sprite atlas regardless of how many pins use it.
+        internal static void BlitSpriteInto(Color32[] buf, int w, int h,
+            Sprite sprite, Color32 tint,
+            float centerPx, float centerPyBottom, float widthPx, float heightPx)
+        {
+            if (sprite == null || buf == null) return;
+            if (widthPx < 1f || heightPx < 1f) return;
+
+            Rect rect = sprite.textureRect;
+            int srcX = Mathf.RoundToInt(rect.x);
+            int srcY = Mathf.RoundToInt(rect.y);
+            int srcW = Mathf.RoundToInt(rect.width);
+            int srcH = Mathf.RoundToInt(rect.height);
+            if (srcW <= 0 || srcH <= 0) return;
+
+            Color32[] atlasPixels = GetCachedAtlasPixels(sprite.texture);
+            if (atlasPixels == null) return;
+            int atlasW = sprite.texture.width;
+
+            int outW = Mathf.Max(1, Mathf.RoundToInt(widthPx));
+            int outH = Mathf.Max(1, Mathf.RoundToInt(heightPx));
+            int halfW = outW / 2;
+            int halfH = outH / 2;
+
+            int cx = Mathf.RoundToInt(centerPx);
+            int cy = Mathf.RoundToInt(centerPyBottom);
+            if (cx + halfW < 0 || cx - halfW >= w ||
+                cy + halfH < 0 || cy - halfH >= h)
+                return;
+
+            float invOutW = (float)srcW / outW;
+            float invOutH = (float)srcH / outH;
+
+            for (int dy = 0; dy < outH; dy++)
+            {
+                int py = cy - halfH + dy;
+                if (py < 0 || py >= h) continue;
+
+                int sy = Mathf.Clamp((int)(dy * invOutH), 0, srcH - 1);
+                int srcRowOffset = (srcY + sy) * atlasW + srcX;
+                int dstRowOffset = py * w;
+
+                for (int dx = 0; dx < outW; dx++)
+                {
+                    int px = cx - halfW + dx;
+                    if (px < 0 || px >= w) continue;
+
+                    int sx = Mathf.Clamp((int)(dx * invOutW), 0, srcW - 1);
+                    Color32 sp = atlasPixels[srcRowOffset + sx];
+
+                    int sa = (sp.a * tint.a) / 255;
+                    if (sa == 0) continue;
+
+                    int sr = (sp.r * tint.r) / 255;
+                    int sg = (sp.g * tint.g) / 255;
+                    int sb = (sp.b * tint.b) / 255;
+
+                    int di = dstRowOffset + px;
+                    if (sa >= 250)
+                    {
+                        buf[di] = new Color32((byte)sr, (byte)sg, (byte)sb, 255);
+                    }
+                    else
+                    {
+                        Color32 dst = buf[di];
+                        int ia = 255 - sa;
+                        buf[di] = new Color32(
+                            (byte)((sr * sa + dst.r * ia) / 255),
+                            (byte)((sg * sa + dst.g * ia) / 255),
+                            (byte)((sb * sa + dst.b * ia) / 255),
+                            255);
+                    }
+                }
+            }
+        }
 
         // The atlas pixel cache is keyed by texture for the duration of one
         // operation; the compile stamp must clear it when done so an unloaded

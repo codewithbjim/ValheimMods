@@ -29,35 +29,12 @@ namespace NoMapDiscordAdditions
         {
             public static string WebhookUrl => Plugin.WebhookUrl?.Value;
 
-            public static bool UseTextureCapture =>
-                Plugin.CaptureMethod.Value == Plugin.CaptureMethodMode.TextureCapture;
-
-            public static int CaptureSuperSize => Plugin.CaptureSuperSize.Value;
-
             public static bool SpoilerImageData => Plugin.SpoilerImageData.Value;
 
             public static bool HideClouds => Plugin.HideClouds.Value;
 
-            public static bool EnableCartographyTableLabels =>
-                Plugin.EnableCartographyTableLabels?.Value ?? true;
-
-            public static int SendMaxDimension =>
-                Plugin.SendMaxDimension?.Value ?? 2560;
-
-            public static bool SpawnLabelIncludeDistance =>
-                Plugin.SpawnLabelIncludeDistance?.Value ?? false;
-
-            public static bool SpawnLabelIncludeDirection =>
-                Plugin.SpawnLabelIncludeDirection?.Value ?? false;
-
-            public static bool SpawnLabelIncludeMapItemSources =>
-                Plugin.SpawnLabelIncludeMapItemSources?.Value ?? false;
-
-            public static bool ShowPinLabelOnCompile =>
-                Plugin.ShowPinLabelOnCompile?.Value ?? true;
-
-            public static int CompileMaxDimension =>
-                Plugin.CompileMaxDimension?.Value ?? 2560;
+            public static bool AllowCompileFromMapItems =>
+                Plugin.AllowCompileFromMapItems?.Value ?? true;
 
             public static string CompileMessageTemplate =>
                 Plugin.CompileMessageTemplate?.Value
@@ -65,7 +42,7 @@ namespace NoMapDiscordAdditions
 
             public static string MessageTemplate =>
                 Plugin.MessageTemplate?.Value
-                ?? "{player} shared a map update from {biome}{spawnDir}{table}";
+                ?? "{player} shared a map update from {biome}{table}";
 
             public static bool EnableCompileMapSharing =>
                 Plugin.EnableCompileMapSharing?.Value ?? true;
@@ -103,9 +80,17 @@ namespace NoMapDiscordAdditions
         }
 
         /// <summary>
-        /// Saves the four time-of-day globals and overwrites them with the
-        /// current environment's noon (day) values. Pass the result to
-        /// <see cref="RestoreLighting"/> in a finally block.
+        /// Saves the four time-of-day globals and overwrites them with FIXED
+        /// neutral-noon values. Pass the result to <see cref="RestoreLighting"/>
+        /// in a finally block.
+        ///
+        /// We deliberately ignore <c>EnvMan.instance.m_currentEnv</c> here —
+        /// it varies per biome (Meadows is brighter than Mountain, Plains has
+        /// warmer sun, etc.) so reading "noon" from it makes consecutive
+        /// compile tiles end up at different brightness depending on which
+        /// biome the player was standing in when each tile was captured.
+        /// Fixed values give every tile the same lighting, which is what the
+        /// "normalize" setting is supposed to do.
         /// </summary>
         public static SavedLighting OverrideLightingToNoon()
         {
@@ -118,20 +103,12 @@ namespace NoMapDiscordAdditions
                 SunFogColor = Shader.GetGlobalColor(_idSunFogColor),
             };
 
-            // Defaults if EnvMan/env is unavailable — neutral bright daylight.
-            Color ambient    = new Color(0.80f, 0.80f, 0.80f, 1f);
-            Color sunColor   = Color.white * 1.2f;
-            Color sunFog     = Color.white;
-            float sunAngle   = 60f;
-
-            var env = EnvMan.instance != null ? EnvMan.instance.m_currentEnv : null;
-            if (env != null)
-            {
-                ambient  = env.m_ambColorDay;
-                sunColor = env.m_sunColorDay * env.m_lightIntensityDay;
-                sunFog   = env.m_fogColorSunDay;
-                sunAngle = env.m_sunAngle;
-            }
+            // Neutral bright daylight — tuned by eye to give Meadows-ish
+            // brightness regardless of which biome the capture happened in.
+            Color ambient  = new Color(0.80f, 0.80f, 0.80f, 1f);
+            Color sunColor = Color.white * 1.2f;
+            Color sunFog   = Color.white;
+            const float sunAngle = 60f;
 
             // Noon sun direction — EnvMan.cs:675 rotation at day fraction 0.5.
             Quaternion rot =

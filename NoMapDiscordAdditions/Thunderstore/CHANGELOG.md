@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.1.0
+
+### Output format (new — applies to SAVE and SEND TO DISCORD)
+
+- New `Output` config section with three settings:
+  - **`Output.Output Format`** — `JPEG` (default) or `IndexedPNG`. Drives the on-disk format for the compile result-panel **SAVE** button **and** the wire format for **SEND TO DISCORD** captures and compile sends. The file extension follows the format (`.jpg` / `.png`) so the on-disk filename matches the actual bytes
+  - **`Output.JPEG Quality`** — 50-100, default `88`. Quality for the JPEG path; 88 keeps pin captions readable, below ~80 noticeably softens label edges
+  - **`Output.Indexed PNG Colours`** — 16-256, default `64`. Palette size for the indexed-PNG encoder. Maps quantize very well (~6 dominant biome colours) so 32-64 is usually indistinguishable from a full-colour PNG while being ~5× smaller; raise to 128-256 if `Map Style` is enabled and the gradient shading is banding
+- New indexed-PNG encoder — 8bpp palette built via median-cut on a 15-bit histogram with Floyd-Steinberg dither. Keeps pin-label edges crisp (no DCT ringing) while delivering JPEG-class compression for typical maps
+- **COPY MAP** clipboard output always emits JPEG (regardless of the Output Format) — indexed-PNG palette quantization on an 8192² image takes multiple seconds on the main thread, long enough that the COPY button looks frozen; JPEG encodes the same image in well under a second. The shared `Output.JPEG Quality` controls both paths so a tuned value carries over
+- SAVE status line now reports format, encoded size, and dimensions (`Saved 7234×4521px JPEG q88 3.4 MB native resolution`) so format A/B testing doesn't require opening the file
+- SEND TO DISCORD compile send now updates the result-panel status with success/failure when the request finishes — previously the panel was stuck on `Sending to Discord...` forever
+
+### Removed configs (replaced by the new pipeline)
+
+- Removed **`General.Capture Method`** — texture capture is the only path now, and it now handles everything the screen-capture path used to. Compile tile capture follows the same simplification (texture-only)
+- Removed **`General.Capture Super Size`** — implicit; the texture capture path now sizes off the on-screen map rect and scales up to the longest-edge cap automatically
+- Removed **`Controls.Copy Full Resolution Modifier`** — COPY MAP now always captures at full resolution (capped at 8192 px on the longest edge). The CTRL modifier's purpose was raising the cap above the Discord-safe one; that cap is gone, so the modifier has nothing to gate
+- Removed **`Discord.Send Max Dimension`** — replaced by the Output Format encoder. SEND now sizes the capture at the longest-edge cap and relies on JPEG / indexed-PNG compression to stay under Discord's 10 MB attachment limit (a typical capture lands ~2-5 MB at JPEG q88)
+- Removed **`Map Compile.Max Output Dimension`** — preview/COPY/SEND use a hardcoded 4096 px cap (keeps recodes snappy at compose time); SAVE goes up to 8192 via the existing native path. The previous setting only ever clamped the preview, so its absence doesn't change SAVE behaviour
+
+### Renamed
+
+- **`Controls.Screenshot Key`** → **`Controls.Send Key`** (BepInEx won't migrate the binding — players who rebound this will need to re-set it)
+
+### Default change
+
+- **`Map Style.Style`** default flipped from `Topographical` back to `None`. The full styled pipeline (biome wash, contours, hillshade, fog smoothing) was rendering at the full 8192² capture size every send/copy, which froze the SEND button for 30+ seconds on a large explored map. Style rendering now runs at native screen resolution (the styled output is intrinsically low-frequency, so a 2K-class internal render is visually indistinguishable from 8K), and the default ships off so first-run captures stay snappy
+
+### Capture pin handling (live SEND / COPY)
+
+- New `PinCaptureFilter` runs for the duration of each SEND / COPY texture-capture frame:
+  - Hides `Player` and `Death` pins for the capture — these are session-scoped and the compile path already excludes them, so SEND/COPY now matches compile behaviour out of the box. Hold **LEFT CTRL** at SEND / COPY click time to opt out for one-off shares (deaths, party positions)
+  - Strips TMP rich-text tags from boss / location captions (`<color=orange>THE ELDER</color>` → `The Elder`) so localized styling doesn't leak into the captured image
+  - Force-shows every named pin's caption GameObject for the capture frame — vanilla `UpdatePins` hides captions past the `m_showNamesZoom` threshold, so a zoomed-out screenshot previously missed every pin name. Caption state is restored immediately after the capture
+  - Survives **ZenMap's** per-frame `ShowLabel(IsCursorOver || IsLabelTogglePressed)` postfix via a `[HarmonyAfter("ZenDragon.ZenMap")]` patch that re-activates the captions every frame between Apply and Restore
+- Texture-capture path now blits the **pin name root** (`Minimap.m_pinNameRootLarge`) in addition to the icon root — captions appear in texture-mode captures too, matching what the old screen-capture path got via the back buffer
+- Pin captions in the live capture and the compile composite render with a one-pass SDF outline (wider sample band painted black under the white face) — readable over snow plains, swamp, and other busy biomes without the per-offset stamp passes the previous outline did
+
+### Map Compile
+
+- **Pin icons** in the composite now read from each pin's live UI `Image.sprite` and `Image.color` (with `pin.m_icon` / `Minimap.GetSprite(type)` as fallbacks). Sprite swaps from mods, discovered-location pins, and boss head outlines now reflect in the composite — previously the compositor pulled the original asset (e.g. orange filled boss head) instead of what the player actually saw
+- **Pin names** are now localized + rich-text-stripped before stamping. Boss / location pins stored as `$enemy_gdking` tokens render as `The Elder` (etc.) on the composite, with no leftover style tags
+- **Pin captions** sample their font size + `FontStyles` from `Minimap.m_pinNamePrefab` so compile captions look identical to live-map captions (same absolute pixel size, same italic/smallcaps if vanilla uses them) instead of the previous hardcoded scale
+- **Pin sizing** now applies a 0.25× scale on top of the composite/screen px-per-px ratio so pins read as discrete markers at composite resolution — pixel-proportional sizing made them feel oversized when the composite spanned many tables' worth of world
+- **Per-tile pin cull**: pins whose world position falls in the black gaps between non-adjacent captured tiles are no longer stamped on the composite. The outer bounding-rect cull (rectangle containing every tile) used to draw pins on those "no data" regions
+- **Compositor seam fix**: removed the 1-pixel-wide tile-boundary averaging. The floor/ceil destination math leaves a 1-pixel overlap column at every adjacent-tile boundary; averaging both tiles' edge pixels there produced a visibly different colour from the un-averaged interior columns, lighting up as faint vertical/horizontal seams on the composite. First-paint pixel wins now, so the boundary reads as a continuation of whichever tile got there first
+
+### Capture lighting
+
+- **`General.Normalize Capture Lighting`** now uses fixed neutral-noon values (Meadows-tuned ambient/sun/fog) instead of reading per-biome `m_currentEnv` day colours. The previous behaviour gave consecutive compile tiles different brightness depending on which biome the player was standing in when each tile was captured — fixed values give every tile the same lighting, which is what "normalize" is supposed to do
+
+### Compatibility
+
+- Bumped the **ZenMap** dependency floor to `1.7.8`
+
 ## 1.0.9
 
 ### Map Style (new)

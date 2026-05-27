@@ -5,7 +5,7 @@ Two map workflows on Valheim's large map:
 1. **SEND MAP** / **COPY MAP** — capture the visible map and either post it to a Discord webhook or paste it directly into Discord, Slack, or an image editor.
 2. **MAP COMPILE** — visit cartography tables one by one and stitch every reading into a single high-resolution PNG you can save, copy, or send to Discord.
 
-Cartography-table pins are decorated with distance/bearing-from-spawn captions baked into the captured image, and every potentially-noisy setting (capture method, message templates, output size, pin labels) can be server-synced so a host enforces the same look for everyone.
+Cartography-table pins are decorated with distance/bearing-from-spawn captions baked into the captured image, and every potentially-noisy setting (message templates, pin labels, output format) can be server-synced so a host enforces the same look for everyone.
 
 ---
 
@@ -15,12 +15,12 @@ The bottom-right of the large map gets a `Show Biome Text` toggle, a **SEND MAP*
 
 ![Large map UI — capture buttons in idle mode](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg)
 
-- **SEND MAP** posts the capture to your Discord webhook with a configurable message template
-- **COPY MAP** writes the PNG to the system clipboard — paste straight into Discord, Slack, or an image editor
-- Hold **Left CTRL** (configurable) when clicking **COPY MAP** to bypass the Discord-friendly cap and copy at up to 4096px on the long edge — useful when you want full quality for image-editor work
+- **SEND MAP** posts the capture to your Discord webhook with a configurable message template — encoded as **JPEG** or **IndexedPNG** per the `Output.Output Format` config (see [Output format](#output-format))
+- **COPY MAP** writes the PNG to the system clipboard at full resolution (capped at 8192px on the long edge) — paste straight into Discord, Slack, or an image editor
 - The bound hotkey is shown in each button label (`SEND MAP (F10)` / `COPY MAP (F11)`) and updates automatically when the keys are re-bound
 - The **SEND MAP** button is hidden until a webhook URL is available (locally or server-pushed); **COPY MAP** is always available
 - Captures hide every UI overlay (panels, buttons, hints, hotbar) — only the map and (optionally) the biome label remain
+- `Player` and `Death` pins are hidden in the capture by default (they're session-scoped and the compile composite already excludes them). Hold **Left CTRL** at SEND / COPY click time to opt out for one-off shares (live deaths, party positions)
 
 | Discord post | Spoiler-tagged |
 |---|---|
@@ -44,9 +44,9 @@ A second panel appears on the bottom-left of the large map. The intent: walk bet
 
 ![MAP COMPILED result panel — preview + SAVE / COPY / SEND TO DISCORD / DISCARD / DONE](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/7.png)
 
-- **SAVE** writes a **full native-resolution** PNG to disk — it recomposes so the sharpest tile maps 1:1 and no tile is downscaled below what it was captured at (a 2000×500 capture stays 2000×500 in its region), giving you a zoomable, editable map. Capped at 8192px on the longest axis; the status line says whether you got native resolution or hit the clamp, and the filename includes the dimensions. The button then morphs into **COPY DIR** so a second click puts the containing folder on the clipboard
-- **COPY** writes the PNG to the clipboard at the Discord-safe size (CTRL+COPY raises the cap to 4096px, same as **COPY MAP**)
-- **SEND TO DISCORD** posts the composed image (Discord-safe size) with the compile message template (`{player}`, `{tileCount}` placeholders)
+- **SAVE** writes a **full native-resolution** image to disk — it recomposes so the sharpest tile maps 1:1 and no tile is downscaled below what it was captured at (a 2000×500 capture stays 2000×500 in its region), giving you a zoomable, editable map. Capped at 8192px on the longest axis. The format follows `Output.Output Format` (JPEG or IndexedPNG — see [Output format](#output-format)); the status line reports dimensions, format and encoded size (e.g. `Saved 7234×4521px JPEG q88 3.4 MB native resolution`), and the filename includes the dimensions. The button then morphs into **COPY DIR** so a second click puts the containing folder on the clipboard
+- **COPY** writes a JPEG to the clipboard at the preview size (4096px cap on the long edge)
+- **SEND TO DISCORD** posts the composed image with the compile message template (`{player}`, `{tileCount}` placeholders), encoded per `Output.Output Format` — status updates to `Sent to Discord.` / `Send failed — see log.` when the request finishes
 - **SAVE / COPY / SEND / DONE are all non-destructive** — your session is kept on disk and stays resumable. **DONE** drops you back into compile mode with every tile intact so you can keep adding tables. Only **DISCARD** (or **CANCEL** while compiling) deletes the session
 - Closing the map while the result panel is open doesn't strand the session — on the next map open you get a **RESUME COMPILE (N)** button that drops you straight back into compile mode with every tile intact (it does **not** reopen the result panel; the transient compiled PNG is discarded — just click **COMPILE** again when you want a fresh result)
 
@@ -84,13 +84,24 @@ Leave the pin unnamed and nothing changes — captions and messages fall back to
 
 `Map Style.Style` (client-only) replaces the live in-game map look with a stylized render for SEND / COPY captures **and** MAP COMPILE tiles, reconstructed from Valheim's own map data — explored areas show full detail, unexplored areas stay fogged. Five settings:
 
-- **None** — the normal in-game map look (no styling)
+- **None** *(default)* — the normal in-game map look (no styling)
 - **Old Map** — aged-parchment chart: biome wash, Perlin grain, height-contour and biome-edge lines (a faithful reimplementation of ASpy's MapPrinter `GenerateOldMap` look)
 - **Chart** — flat topographic chart, contour and biome-edge lines, no parchment grain
-- **Topographical** *(default)* — shaded-relief terrain with hillshading, contours and biome-edge lines
+- **Topographical** — shaded-relief terrain with hillshading, contours and biome-edge lines
 - **Satellite** — naturalistic shaded terrain, no line work
 
-A selected style forces the texture-capture path for that capture (the screen-capture path screenshots the unstyled live map, so styling has to go through the offscreen render). MAP COMPILE tiles render through the same pipeline at tile resolution and the composite stitches stylized terrain together. The per-pixel passes run on a background thread so the game doesn't stall during a capture.
+MAP COMPILE tiles render through the same pipeline at tile resolution and the composite stitches stylized terrain together. The per-pixel passes run on a background thread so the game doesn't stall during a capture. The full pipeline (biome wash, contours, hillshade, fog smoothing) renders at the native on-screen map size — the styled output is intrinsically low-frequency so this is visually indistinguishable from a full-resolution render while keeping SEND/COPY responsive.
+
+---
+
+## Output format
+
+`Output.Output Format` drives the on-disk format for compile **SAVE** and the wire format for every **SEND TO DISCORD** capture (single SEND or compile SEND). The file extension follows the format (`.jpg` / `.png`).
+
+- **JPEG** *(default)* — 24bpp DCT at the configured quality. Smallest files (~5-8× smaller than a lossless PNG); pin captions stay readable at quality ~85 and above, below that the edges noticeably soften.
+- **IndexedPNG** — 8bpp palette built via median-cut on a 15-bit colour histogram with Floyd-Steinberg dither at the configured colour count. Lossy in colour count only — no DCT ringing, so pin labels stay crisp. Maps quantize very well (~6 dominant biome colours), so 32-64 is usually indistinguishable from a full-colour PNG while being ~5× smaller.
+
+**COPY MAP** clipboard output always uses JPEG (regardless of this setting) — indexed-PNG palette quantization on an 8192² image takes multiple seconds on the main thread, long enough that the COPY button looks frozen.
 
 ---
 
@@ -105,28 +116,32 @@ A selected style forces the texture-capture path for that capture (the screen-ca
 | `Discord.Spoiler Image Data` | Tag attachments as Discord spoilers; default `false`. **Server-synced.** |
 | `Discord.Hide Clouds` | Strip the cloud overlay before capture; default `true`. **Server-synced.** |
 | `Discord.Show Biome In Capture` | Include biome label in captured map images; default `false`. Client-only — also toggled via the **Show Biome Text** toggle on the map. |
-| `Discord.Send Max Dimension` | Cap on the longest pixel dimension of any image sent to Discord OR copied via COPY MAP / COPY (compile). Default `2560`, range `512`–`8192`. Keeps 4K screens under Discord's 10MB free-tier limit. **Server-synced.** |
+
+### Output
+
+| Key | Notes |
+|---|---|
+| `Output.Output Format` | `JPEG` (default) or `IndexedPNG`. Drives the on-disk format for compile SAVE **and** the wire format for every SEND TO DISCORD capture. Client-only. See [Output format](#output-format). |
+| `Output.JPEG Quality` | `50`-`100`, default `88`. JPEG encoder quality used when `Output Format = JPEG` and for COPY MAP (which is always JPEG). 88 keeps pin captions readable; values below 80 noticeably blur text. Client-only. |
+| `Output.Indexed PNG Colours` | `16`-`256`, default `64`. Palette size for the indexed-PNG encoder. 32-64 is usually indistinguishable from full colour for maps; 128-256 if you have `Map Style` on and gradient shading is banding. Client-only. |
 
 ### General
 
 | Key | Notes |
 |---|---|
-| `General.Capture Method` | `ScreenCapture` (default) or `TextureCapture`. **Server-synced.** |
-| `General.Capture Super Size` | Screen-capture quality multiplier `1`–`4`. **Server-synced.** |
-| `General.Normalize Capture Lighting` | Render the map as if at noon in `TextureCapture` mode so tiles captured at different times of day don't produce dark/light seams in a compiled map; default `true`. Client-only. |
+| `General.Normalize Capture Lighting` | Render the map at fixed neutral-noon lighting so tiles captured at different times of day (or in different biomes) don't produce dark/light seams in a compiled map; default `true`. Client-only. |
 | `General.Enable Logs` | Print info/warning messages to the BepInEx console and Player.log; default `false`. Turn on if you need to investigate a problem. |
 
 ### Map Style
 
 | Key | Notes |
 |---|---|
-| `Map Style.Style` | Stylized rendering for SEND / COPY captures and MAP COMPILE tiles, reconstructed from Valheim's own map data. `None`, `OldMap`, `Chart`, `Topographical` (default), `Satellite` — see [Map styles](#map-styles) above. A selected style forces the texture-capture path for that capture. Client-only. |
+| `Map Style.Style` | Stylized rendering for SEND / COPY captures and MAP COMPILE tiles, reconstructed from Valheim's own map data. `None` (default), `OldMap`, `Chart`, `Topographical`, `Satellite` — see [Map styles](#map-styles) above. Client-only. |
 
 ### Map Compile
 
 | Key | Notes |
 |---|---|
-| `Map Compile.Max Output Dimension` | Longest pixel dimension of the composed PNG used for the **preview, COPY and SEND TO DISCORD**. Default `2560`, range `512`–`8192`. Default keeps dense compositions under Discord's 10MB cap; raise to 3072 for sharper output, or 4096+ if you don't plan to send via Discord. **Does not affect SAVE** — SAVE always writes full native resolution (hard-capped at 8192px). **Server-synced.** |
 | `Map Compile.Compile Message Template` | Discord message used by **SEND TO DISCORD** in the compile result panel. Supports `{player}`, `{tileCount}`. Default `"{player} compiled a map from {tileCount} cartography tables."` **Server-synced.** |
 | `Map Compile.Enable Map Sharing` | Master toggle for cross-player tile sharing; default `true`. When off, the **SHARE/EXPORT** button is hidden and the `compile-share/incoming` folder is no longer auto-imported — compile mode stays purely local. A server can disable sharing for everyone. **Server-synced.** |
 | `Map Compile.Share Message Template` | Discord message sent once (with the first attachment) by **SHARE TILES**. Supports `{player}`, `{tileCount}`. Default points teammates at the `compile-share/incoming` folder. **Server-synced.** |
@@ -145,9 +160,8 @@ A selected style forces the texture-capture path for that capture (the screen-ca
 
 | Key | Notes |
 |---|---|
-| `Controls.Screenshot Key` | SEND MAP hotkey while the large map is open; default `F10`. |
+| `Controls.Send Key` | SEND MAP hotkey while the large map is open; default `F10`. |
 | `Controls.Copy Key` | COPY MAP hotkey while the large map is open; default `F11`. |
-| `Controls.Copy Full Resolution Modifier` | Hold while clicking **COPY MAP** / compile panel **COPY** to raise the cap to `4096`; default `LeftControl`. |
 
 ---
 
@@ -157,14 +171,10 @@ Config sync is handled by **[Jotunn](https://thunderstore.io/c/valheim/p/Valheim
 
 These settings are server-synced (a host enforces one look for everyone):
 
-- `General.Capture Method`
-- `General.Capture Super Size`
 - `Discord.Spoiler Image Data`
 - `Discord.Hide Clouds`
-- `Discord.Send Max Dimension`
 - `Discord.Message Template`
 - `Discord.Webhook URL` — synced so sending works for everyone, but hidden from the in-game ConfigurationManager window so non-admin players can't read it from the settings UI
-- `Map Compile.Max Output Dimension`
 - `Map Compile.Compile Message Template`
 - `Map Compile.Enable Map Sharing`
 - `Map Compile.Share Message Template`
@@ -174,7 +184,7 @@ These settings are server-synced (a host enforces one look for everyone):
 - `Pin Label.Include Map Item Sources`
 - `Pin Label.Show on Compile Mode`
 
-`Show Biome In Capture`, `Enable Logs`, hotkey bindings, and the modifier key are always local to each client (bound `synced: false`).
+The `Output.*` settings, `Map Style.Style`, `Show Biome In Capture`, `Normalize Capture Lighting`, `Enable Logs`, and hotkey bindings are always local to each client (bound `synced: false`) — output format and styling are personal preferences, and forcing one client's encoder choice on the whole party would be noisy.
 
 ---
 
@@ -183,7 +193,7 @@ These settings are server-synced (a host enforces one look for everyone):
 - [BepInEx Pack for Valheim 5.4.2333](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/) (declared in the manifest)
 - [JsonDotNET 13.0.4](https://thunderstore.io/c/valheim/p/ValheimModding/JsonDotNET/) (declared in the manifest) — used to persist compile sessions to disk
 - [Jotunn 2.29.0](https://thunderstore.io/c/valheim/p/ValheimModding/Jotunn/) (declared in the manifest) — provides the server-authoritative config sync (`SynchronizationManager`). ZenMap already depends on Jotunn, so most setups already have it
-- [ZenMap ≥ 1.7.6](https://thunderstore.io/c/valheim/p/ZenDragon/ZenMap/) (declared in the manifest) — required for MAP COMPILE. Recent ZenMap also fixes a `Graphics.CopyTexture` size-mismatch error on expanded worlds (e.g. a 4× map); update ZenMap if you see that error
+- [ZenMap ≥ 1.7.8](https://thunderstore.io/c/valheim/p/ZenDragon/ZenMap/) (declared in the manifest) — required for MAP COMPILE. Recent ZenMap also fixes a `Graphics.CopyTexture` size-mismatch error on expanded worlds (e.g. a 4× map); update ZenMap if you see that error
 
 ---
 

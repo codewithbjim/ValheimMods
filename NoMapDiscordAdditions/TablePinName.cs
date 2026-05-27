@@ -13,8 +13,9 @@ namespace NoMapDiscordAdditions
     /// </summary>
     public static class TablePinName
     {
-        // Same icon ZenMap uses for table auto-pins; see TablePinLabel for the
-        // rationale on accepting manual Town pins under this filter too.
+        // Same icon ZenMap uses for table auto-pins. Accepts manual Town pins
+        // dropped on the table too — those are the player's way of giving the
+        // table a name without ZenMap involved.
         private const Minimap.PinType TablePinType = Minimap.PinType.Icon1;
 
         // ZenMap hides a pin-tracking GUID inside m_name as

@@ -71,7 +71,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
         private static bool IsTableOrCompiling =>
             MapCompileSession.CurrentState == MapCompileSession.State.Compiling
-            || SpawnDirection.ActiveSource == SpawnDirection.Source.CartographyTable;
+            || MapCompileSession.ActiveTablePos != null;
 
         public static bool HasSessionKey() =>
             Player.m_localPlayer != null && ZNet.instance != null;

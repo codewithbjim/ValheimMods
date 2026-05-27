@@ -14,12 +14,6 @@ namespace NoMapDiscordAdditions
     [BepInDependency(Jotunn.Main.ModGuid)]
     public class Plugin : BaseUnityPlugin
     {
-        public enum CaptureMethodMode
-        {
-            TextureCapture,
-            ScreenCapture
-        }
-
         public enum MapStyleMode
         {
             None,
@@ -29,33 +23,40 @@ namespace NoMapDiscordAdditions
             Satellite
         }
 
+        // Output format for SAVE and SEND TO DISCORD. Lossless 24bpp PNG was
+        // dropped because at native (8192²) resolution it produced ~20 MB
+        // files for no perceptible gain over either of these two — and the
+        // test build keeps both options since one is better for smooth
+        // gradients (Map Style) and the other keeps label edges crisp without
+        // DCT ringing. COPY (clipboard) does NOT honour this — it always
+        // emits indexed PNG so paste targets get a real PNG with crisp text.
+        public enum OutputImageFormat
+        {
+            JPEG,       // 24bpp DCT. ~5-8× smaller than lossless PNG; can blur pin labels below q~85.
+            IndexedPNG  // 8bpp palette + FS dither. ~5× smaller; keeps labels crisp.
+        }
+
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.0.9";
+        public const string PluginVersion = "1.1.0";
 
         public static Plugin Instance { get; private set; }
         public static ConfigEntry<string> WebhookUrl;
         public static ConfigEntry<string> MessageTemplate;
-        public static ConfigEntry<int> CaptureSuperSize;
-        public static ConfigEntry<KeyCode> ScreenshotKey;
+        public static ConfigEntry<KeyCode> SendKey;
         public static ConfigEntry<KeyCode> CopyKey;
-        public static ConfigEntry<KeyCode> CopyFullResModifier;
-        public static ConfigEntry<CaptureMethodMode> CaptureMethod;
         public static ConfigEntry<MapStyleMode> MapStyle;
+        public static ConfigEntry<OutputImageFormat> OutputFormat;
+        public static ConfigEntry<int> JpegQuality;
+        public static ConfigEntry<int> IndexedPngColors;
         public static ConfigEntry<bool> SpoilerImageData;
         public static ConfigEntry<bool> HideClouds;
         public static ConfigEntry<bool> ShowBiomeText;
         public static ConfigEntry<bool> NormalizeCaptureLighting;
-        public static ConfigEntry<bool> EnableCartographyTableLabels;
-        public static ConfigEntry<bool> SpawnLabelIncludeDistance;
-        public static ConfigEntry<bool> SpawnLabelIncludeDirection;
-        public static ConfigEntry<bool> SpawnLabelIncludeMapItemSources;
-        public static ConfigEntry<bool> ShowPinLabelOnCompile;
-        public static ConfigEntry<int> CompileMaxDimension;
         public static ConfigEntry<string> CompileMessageTemplate;
         public static ConfigEntry<bool> EnableCompileMapSharing;
+        public static ConfigEntry<bool> AllowCompileFromMapItems;
         public static ConfigEntry<string> CompileShareMessageTemplate;
-        public static ConfigEntry<int> SendMaxDimension;
         public static ConfigEntry<bool> EnableLogs;
 
         private Harmony _harmony;
@@ -115,22 +116,14 @@ namespace NoMapDiscordAdditions
                 configAttributes: new ConfigurationManagerAttributes { Browsable = false });
 
             MessageTemplate = Config.BindConfig(
-                "Discord", "Message Template", "{player} shared a map update from {biome}{spawnDir}{table}",
-                "Message sent with each screenshot. Supports {player}, {biome}, {spawnDir} and {table} placeholders. " +
-                "{spawnDir} expands to e.g. \" — 1240m NE (45°)\" when the map center is >200 units from spawn, otherwise empty. " +
+                "Discord", "Message Template", "{player} shared a map update from {biome}{table}",
+                "Message sent with each screenshot. Supports {player}, {biome} and {table} placeholders. " +
                 "{table} expands to \" — <name>\" using the name of the map pin on the cartography table " +
                 "(empty when reading a map item, or no named pin sits on the table).",
                 synced: true);
 
-            CaptureSuperSize = Config.BindConfig(
-                "General", "Capture Super Size", 2,
-                "Screen-capture quality multiplier before map crop. " +
-                "Higher values improve detail but increase frame-time and VRAM use. 1 = native, 2 = recommended, 3-4 = heavy.",
-                synced: true,
-                acceptableValues: new AcceptableValueRange<int>(1, 4));
-
-            ScreenshotKey = Config.BindConfig(
-                "Controls", "Screenshot Key", KeyCode.F10,
+            SendKey = Config.BindConfig(
+                "Controls", "Send Key", KeyCode.F10,
                 "Press while large map is open to capture and send to Discord.",
                 synced: false);
 
@@ -138,18 +131,6 @@ namespace NoMapDiscordAdditions
                 "Controls", "Copy Key", KeyCode.F11,
                 "Press while large map is open to capture and copy to the clipboard.",
                 synced: false);
-
-            CopyFullResModifier = Config.BindConfig(
-                "Controls", "Copy Full Resolution Modifier", KeyCode.LeftControl,
-                "Hold this key while clicking COPY MAP / COPY (compiled map) to " +
-                "raise the cap from Send Max Dimension to 4096 — useful for high-" +
-                "fidelity output when pasting into an image editor.",
-                synced: false);
-
-            CaptureMethod = Config.BindConfig(
-                "General", "Capture Method", CaptureMethodMode.ScreenCapture,
-                "Choose the map capture mode.",
-                synced: true);
 
             EnableLogs = Config.BindConfig(
                 "General", "Enable Logs", false,
@@ -185,7 +166,7 @@ namespace NoMapDiscordAdditions
                 synced: false);
 
             MapStyle = Config.BindConfig(
-                "Map Style", "Style", MapStyleMode.Topographical,
+                "Map Style", "Style", MapStyleMode.None,
                 "Optional stylized rendering for SEND / COPY map captures, " +
                 "reconstructed from Valheim's own map data — explored areas show " +
                 "detail, unexplored areas stay fogged. " +
@@ -198,51 +179,38 @@ namespace NoMapDiscordAdditions
                 "not applied to MAP COMPILE tiles. Client-only.",
                 synced: false);
 
-            EnableCartographyTableLabels = Config.BindConfig(
-                "Pin Label", "Enabled", true,
-                "If enabled, cartography-table pins on the large map are decorated with a " +
-                "distance/direction-from-spawn caption during a capture, baked into the screenshot.",
-                synced: true);
+            OutputFormat = Config.BindConfig(
+                "Output", "Output Format", OutputImageFormat.JPEG,
+                "Image format used for the SAVE button (compiled map → disk) " +
+                "AND for SEND TO DISCORD. COPY (clipboard) always emits an " +
+                "indexed PNG regardless of this setting so paste targets get a " +
+                "real PNG with crisp text. " +
+                "JPEG: lossy DCT at the configured quality (~5-8× smaller than " +
+                "a lossless PNG; can blur sharp pin-label edges below quality ~85). " +
+                "IndexedPNG: 8bpp palette via median-cut + Floyd-Steinberg " +
+                "dither at the configured colour count (~5× smaller; keeps " +
+                "label edges crisp because there's no DCT — best fit for " +
+                "typical maps).",
+                synced: false);
 
-            SpawnLabelIncludeDistance = Config.BindConfig(
-                "Pin Label", "Include Distance", false,
-                "If enabled, the label includes the meters from spawn (e.g. \"1240m\" or " +
-                "\"1240m NorthEast (45°)\" when direction is also enabled).",
-                synced: true);
+            JpegQuality = Config.BindConfig(
+                "Output", "JPEG Quality", 88,
+                "JPEG encoder quality used when Output Format = JPEG. " +
+                "Higher = larger file, less ringing around hard edges. 88 keeps " +
+                "pin captions readable; values below 80 noticeably blur text.",
+                synced: false,
+                acceptableValues: new AcceptableValueRange<int>(50, 100));
 
-            SpawnLabelIncludeDirection = Config.BindConfig(
-                "Pin Label", "Include Direction from Spawn", false,
-                "If enabled, the label includes the compass direction from spawn " +
-                "(e.g. \"NorthEast (45°)\"). Off by default. If both distance and " +
-                "direction are disabled, no label is drawn.",
-                synced: true);
-
-            SpawnLabelIncludeMapItemSources = Config.BindConfig(
-                "Pin Label", "Include Map Item Sources", false,
-                "If enabled, the spawn label is also shown when the map is opened from " +
-                "a portable map item (e.g. ZenMap parchment), not just from a cartography table.",
-                synced: true);
-
-            ShowPinLabelOnCompile = Config.BindConfig(
-                "Pin Label", "Show on Compile Mode", true,
-                "If enabled, the distance/direction-from-spawn captions are baked " +
-                "into MAP COMPILE tile captures (still gated by Pin Label.Enabled). " +
-                "Disable to keep compiled maps label-free without affecting plain " +
-                "COPY/SEND captures.",
-                synced: true);
-
-            CompileMaxDimension = Config.BindConfig(
-                "Map Compile", "Max Output Dimension", 2560,
-                "Longest pixel dimension of the compiled PNG used for the result " +
-                "panel PREVIEW, COPY and SEND TO DISCORD. The other axis is sized " +
-                "to preserve world aspect. File size scales with the square of this " +
-                "value (2× dimension ≈ 4× file size). Default 2560 keeps even dense " +
-                "compositions under Discord's 10MB free-tier attachment limit; raise " +
-                "to 3072 for sharper output if your compositions are lighter, or to " +
-                "4096+ if you don't plan to send via Discord. Does NOT affect SAVE — " +
-                "SAVE always writes full native per-tile resolution (capped at 8192px).",
-                synced: true,
-                acceptableValues: new AcceptableValueRange<int>(512, 8192));
+            IndexedPngColors = Config.BindConfig(
+                "Output", "Indexed PNG Colours", 64,
+                "Palette size used for indexed-PNG encoding — applies to " +
+                "Output Format = IndexedPNG and to ALL clipboard COPY output. " +
+                "Maps have ~6 dominant colours (water, grass, dirt, ice, swamp, " +
+                "fog) so 32-64 is usually indistinguishable from full-colour; " +
+                "128-256 is overkill for a map but smooths gradient regions " +
+                "if you have Map Style enabled.",
+                synced: false,
+                acceptableValues: new AcceptableValueRange<int>(16, 256));
 
             CompileMessageTemplate = Config.BindConfig(
                 "Map Compile", "Compile Message Template",
@@ -260,6 +228,15 @@ namespace NoMapDiscordAdditions
                 "incoming tiles are imported.",
                 synced: true);
 
+            AllowCompileFromMapItems = Config.BindConfig(
+                "Map Compile", "Allow From Map Items", true,
+                "If enabled, compile mode is also available when the map is " +
+                "opened from a portable map item (e.g. ZenMap parchment), not " +
+                "just from a cartography table. Tiles added while reading a " +
+                "map item dedup by the item's read position. Disable to " +
+                "restrict compile mode to cartography tables only.",
+                synced: true);
+
             CompileShareMessageTemplate = Config.BindConfig(
                 "Map Compile", "Share Message Template",
                 "{player} shared {tileCount} map tile(s) for compile mode. " +
@@ -270,21 +247,9 @@ namespace NoMapDiscordAdditions
                 "{tileCount} placeholders.",
                 synced: true);
 
-            SendMaxDimension = Config.BindConfig(
-                "Discord", "Send Max Dimension", 2560,
-                "Cap on the longest pixel dimension of any image sent to Discord " +
-                "OR copied to the clipboard via COPY MAP / COPY (compiled). Larger " +
-                "captures are downscaled before encoding. Keeps even 4K-screen " +
-                "ScreenCapture output safely under Discord's 10MB free-tier limit. " +
-                "Hold Left CTRL when clicking COPY to raise the cap to 4096 — high " +
-                "fidelity for image editing without producing pathologically large " +
-                "clipboard payloads. Discord-bound paths always honor this setting.",
-                synced: true,
-                acceptableValues: new AcceptableValueRange<int>(512, 8192));
-
             WebhookUrl.SettingChanged += (_, __) => CaptureButton.RefreshEnabledState();
             ShowBiomeText.SettingChanged += (_, __) => CaptureButton.RefreshBiomeToggleState();
-            ScreenshotKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
+            SendKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
             CopyKey.SettingChanged += (_, __) => CaptureButton.RefreshHotkeyLabels();
 
             // Server-authoritative config is handled entirely by Jotunn's
@@ -302,11 +267,6 @@ namespace NoMapDiscordAdditions
             if (Minimap.instance != null)
             {
                 bool large = Minimap.instance.m_mode == Minimap.MapMode.Large;
-                // Strip any label clones the previous instance left behind. The
-                // new TablePinLabel pool is empty, so without this sweep those
-                // GameObjects would remain in the scene displaying their
-                // last-set text with no Tick to manage them.
-                TablePinLabel.DestroyOrphans();
                 CaptureButton.Create();
                 CaptureButton.SetVisible(large);
                 MapCompile.MapCompileButtons.Create();
@@ -325,7 +285,7 @@ namespace NoMapDiscordAdditions
             if (Minimap.instance == null || Minimap.instance.m_mode != Minimap.MapMode.Large)
                 return;
 
-            if (Input.GetKeyDown(ScreenshotKey.Value))
+            if (Input.GetKeyDown(SendKey.Value))
                 TriggerDiscordSend();
             else if (Input.GetKeyDown(CopyKey.Value))
                 TriggerClipboardCopy();
@@ -333,11 +293,11 @@ namespace NoMapDiscordAdditions
 
         /// <summary>
         /// Captures the visible map and copies it to the system clipboard.
-        /// Called by the COPY MAP UI button. By default the copied image is
-        /// capped to <see cref="SendMaxDimension"/> (matches the Discord cap)
-        /// to keep clipboard payloads sane. Holding Left CTRL at click time
-        /// bypasses the cap and copies full-resolution — useful when the
-        /// player wants to paste into an image editor at maximum quality.
+        /// Called by the COPY MAP UI button. Always copies at full resolution
+        /// (capped at <see cref="CaptureMaxDim"/>) — the previous CTRL-modifier
+        /// behaviour was removed because the Discord-safe cap (which still
+        /// applies to SEND) was the only reason to downscale, and a clipboard
+        /// payload at native screen resolution is what image-editor work needs.
         /// </summary>
         public void TriggerClipboardCopy()
         {
@@ -349,65 +309,67 @@ namespace NoMapDiscordAdditions
             // CurrentSendingOp to decide which button label to swap.
             CurrentSendingOp = SendingOp.Copy;
             _sendingInProgress = true;
-            bool fullResolution = IsFullResModifierHeld();
-            // A selected Map Style is rendered into the texture-capture base,
-            // so it forces the texture path regardless of the Capture Method.
-            bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture
-                || MapStyleRender.IsStyleActive();
-            StartCoroutine(preferTexture
-                ? CaptureAndCopyPreferTexture(fullResolution)
-                : CaptureAndCopyScreen(fullResolution));
+            StartCoroutine(CaptureAndCopy());
         }
 
-        // Shared modifier check — the configured key bumps the COPY cap from
-        // SendMaxDimension up to FullResolutionMaxDim. Lives on Plugin so
-        // MapCompileResultPanel can reuse it. Falls back to LeftControl if
-        // the config is unavailable (e.g. very early in startup).
-        public static bool IsFullResModifierHeld()
-            => Input.GetKey(CopyFullResModifier?.Value ?? KeyCode.LeftControl);
+        // Hard ceiling for COPY MAP and SEND TO DISCORD render targets.
+        // 8192 matches the compile-SAVE NativeMaxDim so a single capture and
+        // a compile tile end up at the same per-px density. COPY targets the
+        // system clipboard (paste into an image editor wants full per-pixel
+        // detail); SEND targets Discord and leans on the Output Format
+        // encoder (JPEG / IndexedPNG via Recode) to stay under the 10MB
+        // attachment cap at this resolution. Map Style intentionally bypasses
+        // this and renders at native screen size — see CaptureTextureWithStyle.
+        // Note: 8192² × 4 bytes = 256 MB in a clipboard DIB, so paste targets
+        // that mmap the whole clipboard (e.g. Discord's web client) may
+        // struggle on COPY; for those, use SEND TO DISCORD.
+        private const int CaptureMaxDim = 8192;
 
-        // Hard ceiling for "full resolution" COPY (CTRL-modified). Even when
-        // the player asks for max quality, we still clamp at 4096 — a 4K
-        // screen at superSize=2 produces 7680x4320 raw which would balloon
-        // the clipboard payload to 50+ MB and choke paste targets like
-        // Discord's web client. 4096 keeps screen captures sharp without
-        // pathological sizes; texture captures (1920x1080 native) sail
-        // under it untouched.
-        private const int FullResolutionMaxDim = 4096;
-
-        private System.Collections.IEnumerator CaptureAndCopyScreen(bool fullResolution)
+        /// <summary>
+        /// EncodeOptions for SAVE + SEND, derived from the Output config
+        /// section. Defaults are filled in from <see cref="MapCompositor.EncodeOptions.Default"/>
+        /// when the ConfigEntries are unbound (early-load defensive path —
+        /// shouldn't fire in practice once Awake has run).
+        /// </summary>
+        public static MapCompile.MapCompositor.EncodeOptions GetEncodeOptions()
         {
-            try
-            {
-                byte[] imageData = null;
-                yield return MapCapture.CaptureVisibleMap(data => imageData = data);
-                int cap = fullResolution ? FullResolutionMaxDim : ModHelpers.EffectiveConfig.SendMaxDimension;
-                imageData = DownscalePngForSend(imageData, cap);
-                CopyToClipboard(imageData);
-            }
-            finally
-            {
-                _sendingInProgress = false;
-            }
+            var opts = MapCompile.MapCompositor.EncodeOptions.Default;
+            opts.Format = (OutputFormat?.Value ?? OutputImageFormat.JPEG)
+                          == OutputImageFormat.IndexedPNG
+                ? MapCompile.MapCompositor.EncodeFormat.IndexedPng
+                : MapCompile.MapCompositor.EncodeFormat.Jpeg;
+            if (JpegQuality      != null) opts.JpegQuality      = JpegQuality.Value;
+            if (IndexedPngColors != null) opts.IndexedPngColors = IndexedPngColors.Value;
+            return opts;
         }
 
-        private System.Collections.IEnumerator CaptureAndCopyPreferTexture(bool fullResolution)
+        /// <summary>
+        /// EncodeOptions for COPY (clipboard). JPEG — IndexedPNG palette
+        /// quantization on an 8192² image takes multiple seconds on the
+        /// main thread (long enough that the COPY button looks frozen);
+        /// JPEG encodes the same image in well under a second. The shared
+        /// <see cref="JpegQuality"/> config controls quality so a tuned
+        /// SAVE / SEND value carries over.
+        /// </summary>
+        public static MapCompile.MapCompositor.EncodeOptions GetCopyEncodeOptions()
+        {
+            var opts = MapCompile.MapCompositor.EncodeOptions.Default;
+            opts.Format = MapCompile.MapCompositor.EncodeFormat.Jpeg;
+            if (JpegQuality != null) opts.JpegQuality = JpegQuality.Value;
+            return opts;
+        }
+
+        private System.Collections.IEnumerator CaptureAndCopy()
         {
             try
             {
                 yield return new WaitForEndOfFrame();
 
-                // Capture sized to the player's resolution; CTRL (fullResolution)
-                // scales it up to the 4K-class cap. The map shader / styled base
-                // and pin sprites all rasterize at that resolution.
                 byte[] imageData = null;
-                yield return CaptureTextureWithStyle(
-                    fullResolution, includePinLabels: true, onResult: d => imageData = d);
+                yield return CaptureTextureWithStyle(d => imageData = d);
 
-                if (imageData == null)
-                    yield return MapCapture.CaptureVisibleMap(data => imageData = data);
-                int cap = fullResolution ? FullResolutionMaxDim : ModHelpers.EffectiveConfig.SendMaxDimension;
-                imageData = DownscalePngForSend(imageData, cap);
+                imageData = MapCompile.MapCompositor.Recode(
+                    imageData, GetCopyEncodeOptions(), maxDim: CaptureMaxDim);
                 CopyToClipboard(imageData);
             }
             finally
@@ -418,16 +380,15 @@ namespace NoMapDiscordAdditions
 
         /// <summary>
         /// Public entry point for copying arbitrary PNG bytes to the clipboard.
-        /// Used by the Map Compile result panel. Default cap is
-        /// <see cref="SendMaxDimension"/>; pass <paramref name="fullResolution"/>=true
-        /// (when Left CTRL is held) to raise the cap to <see cref="FullResolutionMaxDim"/>
-        /// (4096) so high-resolution edits are still possible without producing
-        /// a 50+ MB clipboard payload. Safe to call from the Unity main thread.
+        /// Re-encodes via <see cref="GetCopyEncodeOptions"/> so paste targets
+        /// get a clipboard-friendly payload. Capped at
+        /// <see cref="CaptureMaxDim"/> on the longest axis. Safe to call from
+        /// the Unity main thread.
         /// </summary>
-        public void CopyBytesToClipboard(byte[] pngData, bool fullResolution = false)
+        public void CopyBytesToClipboard(byte[] pngData)
         {
-            int cap = fullResolution ? FullResolutionMaxDim : ModHelpers.EffectiveConfig.SendMaxDimension;
-            pngData = DownscalePngForSend(pngData, cap);
+            pngData = MapCompile.MapCompositor.Recode(
+                pngData, GetCopyEncodeOptions(), maxDim: CaptureMaxDim);
             CopyToClipboard(pngData);
         }
 
@@ -491,18 +452,27 @@ namespace NoMapDiscordAdditions
         /// the configured webhook + the <see cref="CompileMessageTemplate"/>.
         /// Independent of the live capture pipeline — no map mode requirement.
         /// </summary>
-        public void SendCompiledImage(byte[] pngData, int tileCount)
+        public void SendCompiledImage(byte[] pngData, int tileCount,
+            System.Action<bool> onComplete = null)
         {
-            if (_sendingInProgress) return;
-            if (string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl)) return;
-            if (pngData == null || pngData.Length == 0) return;
+            if (_sendingInProgress) { onComplete?.Invoke(false); return; }
+            if (string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl))
+            { onComplete?.Invoke(false); return; }
+            if (pngData == null || pngData.Length == 0)
+            { onComplete?.Invoke(false); return; }
 
             _sendingInProgress = true;
-            StartCoroutine(SendCompiledImageCoroutine(pngData, tileCount));
+            StartCoroutine(SendCompiledImageCoroutine(pngData, tileCount, onComplete));
         }
 
-        private System.Collections.IEnumerator SendCompiledImageCoroutine(byte[] pngData, int tileCount)
+        private System.Collections.IEnumerator SendCompiledImageCoroutine(byte[] pngData, int tileCount,
+            System.Action<bool> onComplete)
         {
+            // ok flips false on any exception or recode/encode failure so the
+            // caller's completion callback can swap its "Sending..." status
+            // for a concrete success/error message instead of leaving the
+            // panel stuck on the in-flight text.
+            bool ok = false;
             try
             {
                 var player = Player.m_localPlayer;
@@ -514,13 +484,20 @@ namespace NoMapDiscordAdditions
                 string fileName = BuildMapFileName(playerName, $"compiled_{tileCount}t");
 
                 player?.Message(MessageHud.MessageType.Center, "Sending compiled map to Discord...");
-                pngData = DownscalePngForSend(pngData, ModHelpers.EffectiveConfig.SendMaxDimension);
+                // Recode into the user's Output Format (default JPEG q88).
+                // No dimensional downscale here — the compile preview is
+                // already capped at the compose step; this just gets it
+                // under Discord's 10MB attachment limit via the chosen
+                // encoder.
+                pngData = MapCompile.MapCompositor.Recode(pngData, GetEncodeOptions());
                 yield return DiscordWebhook.SendImage(
                     pngData, fileName, message, ModHelpers.EffectiveConfig.SpoilerImageData);
+                ok = true;
             }
             finally
             {
                 _sendingInProgress = false;
+                onComplete?.Invoke(ok);
             }
         }
 
@@ -751,42 +728,17 @@ namespace NoMapDiscordAdditions
             // SendingStateChanged fires.
             CurrentSendingOp = SendingOp.Send;
             _sendingInProgress = true;
-            // A selected Map Style is rendered into the texture-capture base,
-            // so it forces the texture path regardless of the Capture Method.
-            bool preferTexture = ModHelpers.EffectiveConfig.UseTextureCapture
-                || MapStyleRender.IsStyleActive();
-            StartCoroutine(preferTexture ? CaptureAndSendPreferTexture() : CaptureAndSendScreen());
+            StartCoroutine(CaptureAndSend());
         }
 
-        private System.Collections.IEnumerator CaptureAndSendScreen()
+        private System.Collections.IEnumerator CaptureAndSend()
         {
             BuildCaptureContext(out Player player, out string playerName, out string biome, out string message);
             try
             {
-                byte[] imageData = null;
-                yield return MapCapture.CaptureVisibleMap(data => imageData = data);
-                yield return SendCapturedImage(imageData, player, playerName, biome, message);
-            }
-            finally
-            {
-                _sendingInProgress = false;
-            }
-        }
-
-        private System.Collections.IEnumerator CaptureAndSendPreferTexture()
-        {
-            BuildCaptureContext(out Player player, out string playerName, out string biome, out string message);
-            try
-            {
-                // Texture capture path.
                 yield return new WaitForEndOfFrame();
                 byte[] imageData = null;
-                yield return CaptureTextureWithStyle(
-                    fullResolution: false, includePinLabels: true, onResult: d => imageData = d);
-
-                // Fallback to screen capture if texture path fails.
-                if (imageData == null)
-                    yield return MapCapture.CaptureVisibleMap(data => imageData = data);
+                yield return CaptureTextureWithStyle(d => imageData = d);
 
                 yield return SendCapturedImage(imageData, player, playerName, biome, message);
             }
@@ -796,30 +748,34 @@ namespace NoMapDiscordAdditions
             }
         }
 
-        // Runs a texture capture sized to the player's resolution (the on-screen
-        // map rect), first building the stylized map base on a background thread
-        // when a Map Style is selected (passed to CaptureMap as the base layer —
-        // pins/markers/labels still overlay normally). With no style active this
-        // is a plain texture capture. fullResolution scales the output up so its
-        // longest edge reaches the CTRL+COPY cap. The styled texture is owned
-        // here and destroyed once the capture consumes it.
-        private System.Collections.IEnumerator CaptureTextureWithStyle(
-            bool fullResolution, bool includePinLabels, System.Action<byte[]> onResult)
+        // The one and only capture path. Renders the map shader off-screen at
+        // CaptureMaxDim on the longest edge (screen-native aspect, scaled up
+        // from the on-screen map rect), optionally compositing a stylized
+        // base (Map Style) handed in from MapStyleRender. Pins / markers /
+        // TMP labels are rasterized CPU-side on top via MapCaptureTexture.
+        // Map Style intentionally bypasses the upscale — MapStyleRender's
+        // per-pixel pipeline (biome wash, perlin grain, contours, fog) at
+        // 8192² is 67M pixels and 30+ seconds on a worker thread, which
+        // presents as the SEND / COPY button stuck on its loading label for
+        // what looks like forever. Native screen size keeps the style render
+        // well under a second.
+        private System.Collections.IEnumerator CaptureTextureWithStyle(System.Action<byte[]> onResult)
         {
             MapCaptureTexture.GetDefaultCaptureSize(out int width, out int height);
-            if (fullResolution)
+            bool styleActive = MapStyleRender.IsStyleActive();
+            if (!styleActive)
             {
                 int longest = Mathf.Max(width, height);
-                if (longest > 0 && longest < FullResolutionMaxDim)
+                if (longest > 0 && longest < CaptureMaxDim)
                 {
-                    float k = (float)FullResolutionMaxDim / longest;
+                    float k = (float)CaptureMaxDim / longest;
                     width = Mathf.RoundToInt(width * k);
                     height = Mathf.RoundToInt(height * k);
                 }
             }
 
             Texture2D styled = null;
-            if (MapStyleRender.IsStyleActive())
+            if (styleActive)
             {
                 var mapImage = Minimap.instance != null ? Minimap.instance.m_mapImageLarge : null;
                 if (mapImage != null)
@@ -832,7 +788,7 @@ namespace NoMapDiscordAdditions
 
             try
             {
-                onResult(MapCaptureTexture.CaptureMap(width, height, includePinLabels, styled));
+                onResult(MapCaptureTexture.CaptureMap(width, height, styled));
             }
             finally
             {
@@ -847,26 +803,18 @@ namespace NoMapDiscordAdditions
             playerName = player != null ? player.GetPlayerName() : "unknown";
             biome = player != null ? player.GetCurrentBiome().ToString() : "unknown";
 
-            string spawnLabel = SpawnDirection.GetLabel();
-            string spawnDirText = spawnLabel != null ? $" — {spawnLabel}" : "";
-
-            string tableName = SpawnDirection.GetTableName();
+            string tableName = MapCompile.MapCompileSession.ActiveTableName;
             string tableText = !string.IsNullOrEmpty(tableName) ? $" — {tableName}" : "";
 
-            // Legacy configs (from earlier plugin versions) may have a Message Template
-            // saved without the {spawnDir} placeholder — BepInEx never overwrites an
-            // existing config value with a newer default. Append in that case so the
-            // spawn-direction info still reaches Discord without requiring users to
-            // manually edit their .cfg.
             message = ModHelpers.EffectiveConfig.MessageTemplate ?? string.Empty;
-            if (message.Contains("{spawnDir}"))
-                message = message.Replace("{spawnDir}", spawnDirText);
-            else if (spawnDirText.Length > 0)
-                message += spawnDirText;
+            // Strip the legacy {spawnDir} placeholder from older configs that
+            // still have it — the feature is gone but a saved template won't
+            // be rewritten by BepInEx.
+            message = message.Replace("{spawnDir}", string.Empty);
 
-            // Same legacy handling as {spawnDir}: replace in place when the
-            // template has the placeholder, otherwise append so older configs
-            // (saved before {table} existed) still get the table name.
+            // Replace in place when the template has the placeholder, otherwise
+            // append so older configs (saved before {table} existed) still get
+            // the table name.
             if (message.Contains("{table}"))
                 message = message.Replace("{table}", tableText);
             else if (tableText.Length > 0)
@@ -886,65 +834,17 @@ namespace NoMapDiscordAdditions
                 yield break;
             }
 
-            // Cap longest dimension before sending so 4K / ultrawide screens
-            // don't blow past Discord's 10MB attachment limit. Clipboard
-            // copies don't go through here, so COPY MAP keeps full resolution.
-            imageData = DownscalePngForSend(imageData, ModHelpers.EffectiveConfig.SendMaxDimension);
+            // Recode into the user's Output Format (default JPEG q88) — keeps
+            // full resolution and relies on encoder compression to stay under
+            // Discord's 10MB attachment limit. A single capture at native
+            // screen resolution × superSize 2 typically fits well within that
+            // budget at JPEG q88 or IndexedPNG 64-colour.
+            imageData = MapCompile.MapCompositor.Recode(imageData, GetEncodeOptions());
 
             string fileName = BuildMapFileName(playerName, biome);
             player?.Message(MessageHud.MessageType.Center, "Sending map to Discord...");
             yield return DiscordWebhook.SendImage(
                 imageData, fileName, message, ModHelpers.EffectiveConfig.SpoilerImageData);
-        }
-
-        // Decode → resize → re-encode if the longest pixel dimension exceeds
-        // <paramref name="maxDim"/>. Returns the original bytes when no scaling
-        // is needed (max dim already at/below the cap) or when decoding fails.
-        // Always emits a 24bpp PNG since the SEND paths never carry alpha.
-        private static byte[] DownscalePngForSend(byte[] pngBytes, int maxDim)
-        {
-            if (pngBytes == null || pngBytes.Length == 0) return pngBytes;
-            if (maxDim < 64) return pngBytes;
-
-            try
-            {
-                using (var ms = new System.IO.MemoryStream(pngBytes))
-                using (var src = new System.Drawing.Bitmap(ms))
-                {
-                    int w = src.Width, h = src.Height;
-                    int longest = w > h ? w : h;
-                    if (longest <= maxDim) return pngBytes;
-
-                    float scale = (float)maxDim / longest;
-                    int newW = UnityEngine.Mathf.Max(1, UnityEngine.Mathf.RoundToInt(w * scale));
-                    int newH = UnityEngine.Mathf.Max(1, UnityEngine.Mathf.RoundToInt(h * scale));
-
-                    using (var resized = new System.Drawing.Bitmap(
-                        newW, newH, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
-                    {
-                        using (var g = System.Drawing.Graphics.FromImage(resized))
-                        {
-                            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
-                            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                            g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
-                            g.DrawImage(src, 0, 0, newW, newH);
-                        }
-                        using (var outMs = new System.IO.MemoryStream())
-                        {
-                            resized.Save(outMs, System.Drawing.Imaging.ImageFormat.Png);
-                            byte[] result = outMs.ToArray();
-                            ModLog.Info($"[NoMapDiscordAdditions] Discord send downscaled " +
-                                      $"{w}x{h} -> {newW}x{newH} ({pngBytes.Length} -> {result.Length} bytes).");
-                            return result;
-                        }
-                    }
-                }
-            }
-            catch (System.Exception ex)
-            {
-                ModLog.Warn($"[NoMapDiscordAdditions] Send downscale failed, sending original: {ex.Message}");
-                return pngBytes;
-            }
         }
 
         // Filename: <player>_<biome>_<yyyyMMdd-HHmmss>.png, with anything that

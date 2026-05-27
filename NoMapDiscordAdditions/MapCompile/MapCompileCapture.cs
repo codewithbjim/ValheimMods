@@ -8,12 +8,11 @@ namespace NoMapDiscordAdditions.MapCompile
     /// cover. Snapshots <c>m_mapImageLarge.uvRect</c> up front so the rect
     /// always matches what was actually rendered.
     ///
-    /// Honours the global <c>Capture Method</c> config: screen-capture by
-    /// default (the simpler path — uses what the player sees, no shader
-    /// re-render), texture-capture for the off-screen render variant. Both
-    /// produce a PNG covering the clamped-uv span (matches
+    /// Renders the map shader off-screen via <see cref="MapCaptureTexture"/>
+    /// (or via the Map Style pipeline when a style is active) to a tile-sized
+    /// target. The PNG covers the clamped-uv span (matches
     /// <see cref="MapCompileTile.ComputeWorldRect"/>'s world rect) so the
-    /// compositor can mix tiles from either path without alignment drift.
+    /// compositor can stitch tiles without alignment drift.
     /// </summary>
     public static class MapCompileCapture
     {
@@ -34,10 +33,10 @@ namespace NoMapDiscordAdditions.MapCompile
         }
 
         /// <summary>
-        /// Capture one tile, branching on the global Capture Method config.
-        /// Coroutine because the screen-capture path needs <c>WaitForEndOfFrame</c>
-        /// after hiding the UI. <paramref name="callback"/> receives the
-        /// <see cref="Result"/> on success or <c>null</c> on any failure.
+        /// Capture one tile. Coroutine because we yield <c>WaitForEndOfFrame</c>
+        /// to make sure the live map shader has rendered with the current
+        /// uvRect before we sample it. <paramref name="callback"/> receives
+        /// the <see cref="Result"/> on success or <c>null</c> on any failure.
         /// </summary>
         public static IEnumerator Capture(System.Action<Result?> callback)
         {
@@ -62,11 +61,9 @@ namespace NoMapDiscordAdditions.MapCompile
             MapCompileTile.ComputeWorldRect(minimap, uv, out var wmin, out var wmax);
             bool fully = IsFullyMapped(minimap, uv);
 
-            // When a Map Style is selected it overrides the Capture Method
-            // config — the screen-capture path screenshots the unstyled live
-            // map and can't substitute a styled base, so we always go through
-            // an off-screen texture render with the stylized texture handed in
-            // as the base layer (same pattern as Plugin.CaptureTextureWithStyle).
+            // Map Style routes through its own coroutine because the styled
+            // base is built on a background thread before being handed to
+            // MapCaptureTexture as the base layer.
             if (MapStyleRender.IsStyleActive())
             {
                 Result? styledResult = null;
@@ -75,60 +72,23 @@ namespace NoMapDiscordAdditions.MapCompile
                 yield break;
             }
 
-            if (ModHelpers.EffectiveConfig.UseTextureCapture)
+            yield return new WaitForEndOfFrame();
+
+            // Re-verify mode after the yield — the player can close the
+            // map during the frame and Minimap can tear down references.
+            if (Minimap.instance == null
+                || Minimap.instance.m_mode != Minimap.MapMode.Large)
             {
-                yield return new WaitForEndOfFrame();
-
-                // Re-verify mode after the yield — the player can close the
-                // map during the frame and Minimap can tear down references.
-                if (Minimap.instance == null
-                    || Minimap.instance.m_mode != Minimap.MapMode.Large)
-                {
-                    callback?.Invoke(null);
-                    yield break;
-                }
-
-                callback?.Invoke(CaptureTexture(uv, wmin, wmax, fully));
+                callback?.Invoke(null);
+                yield break;
             }
-            else
-            {
-                byte[] png = null;
-                int w = 0, h = 0;
-                // Screen capture handles its own UI hide + WaitForEndOfFrame
-                // (see MapCapture.CaptureVisibleMap). cropToClampedUv keeps the
-                // PNG aligned with the world rect ComputeWorldRect produced;
-                // includePinLabels=false matches the texture path — labels
-                // stamp once on the composite. Lighting normalization is read
-                // from the config inside CaptureVisibleMap itself.
-                yield return MapCapture.CaptureVisibleMap(
-                    data => png = data,
-                    cropToClampedUv: true,
-                    includePinLabels: false,
-                    sizeCallback: (cw, ch) => { w = cw; h = ch; });
 
-                if (png == null || w <= 0 || h <= 0)
-                {
-                    ModLog.Warn("[NoMapDiscordAdditions] Compile capture: screen capture returned no data.");
-                    callback?.Invoke(null);
-                    yield break;
-                }
-
-                callback?.Invoke(new Result
-                {
-                    Png = png,
-                    Width = w,
-                    Height = h,
-                    WorldMin = wmin,
-                    WorldMax = wmax,
-                    FullyMapped = fully,
-                });
-            }
+            callback?.Invoke(CaptureTexture(uv, wmin, wmax, fully));
         }
 
-        // Texture-capture branch. Renders the map shader off-screen at a
-        // 4K-class longest edge sized to the clamped-uv aspect so the
-        // composite has isotropic per-tile density. Kept available as the
-        // alternative to screen capture (config: Capture Method = Texture).
+        // Renders the map shader off-screen at a 4K-class longest edge sized
+        // to the clamped-uv aspect so the composite has isotropic per-tile
+        // density.
         private static Result? CaptureTexture(Rect uv, Vector2 wmin, Vector2 wmax, bool fully)
         {
             // Size the off-screen target to the clamped-uv aspect so DrawMapBase
@@ -158,7 +118,7 @@ namespace NoMapDiscordAdditions.MapCompile
                 capH = MapCaptureTexture.OutputHeight;
             }
 
-            byte[] png = MapCaptureTexture.CaptureMap(capW, capH, includePinLabels: false);
+            byte[] png = MapCaptureTexture.CaptureMap(capW, capH, drawPinIcons: false);
             if (png == null)
             {
                 ModLog.Warn("[NoMapDiscordAdditions] Compile capture: MapCaptureTexture returned null.");
@@ -238,7 +198,8 @@ namespace NoMapDiscordAdditions.MapCompile
             // CaptureMap tolerates a null styled base (falls back to a default
             // texture render) — that keeps the composite usable even if the
             // style pipeline failed for one tile.
-            byte[] png = MapCaptureTexture.CaptureMap(capW, capH, includePinLabels: false, styled);
+            byte[] png = MapCaptureTexture.CaptureMap(capW, capH,
+                styledBase: styled, drawPinIcons: false);
             if (styled != null) Object.Destroy(styled);
 
             if (png == null)
@@ -259,13 +220,12 @@ namespace NoMapDiscordAdditions.MapCompile
             });
         }
 
-        // 4K-class longest edge per texture-capture tile, matching the
-        // CTRL+COPY full-res cap in Plugin.cs. Downstream composite ceilings
-        // still apply (Discord/COPY cap, native SAVE clamps at 8192) so this
-        // only sets how much real detail each tile carries IN — not the final
-        // output size. Screen-capture tile size is driven by the player's
-        // screen × CaptureSuperSize instead, which gives equivalent density on
-        // typical 1440p/4K setups without needing its own constant.
+        // 4K-class longest edge per texture-capture tile — sets how much real
+        // detail each tile carries IN. Downstream composite ceilings still
+        // apply (COPY caps at 8192; native SAVE clamps at 8192). Kept at 4096
+        // because a single tile at 8192 takes ~268MB while it's being composed
+        // in, and the multi-tile compose path is the one that drives up to the
+        // 8192 final-output ceiling.
         private const int TileMaxDim = 4096;
 
         // Per-tile cap on the internal resolution the Map Style pipeline runs

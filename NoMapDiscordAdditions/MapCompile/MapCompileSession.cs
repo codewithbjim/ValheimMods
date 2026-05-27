@@ -27,6 +27,13 @@ namespace NoMapDiscordAdditions.MapCompile
         // we're in the Compiling state — gating per the user's "tables only" rule.
         public static Vector3? ActiveTablePos { get; private set; }
 
+        // Name resolved (via TablePinName.Resolve) from the closest named pin
+        // on the active table. Set in SetActiveTable, cleared in
+        // ClearActiveTable. Survives a map close→reopen at the same table —
+        // CartographyTablePatch re-sets it on every OnRead. Backs the Discord
+        // {table} placeholder (Plugin.SendCapturedImage substitution).
+        public static string ActiveTableName { get; private set; }
+
         private static readonly List<MapCompileTile> _tiles = new List<MapCompileTile>();
         private static string _sessionKey;
         private static string _sessionDir;
@@ -42,13 +49,18 @@ namespace NoMapDiscordAdditions.MapCompile
         public static void SetActiveTable(Vector3 worldPos)
         {
             ActiveTablePos = worldPos;
+            // Resolve the table name now (pins don't move; one resolve per
+            // OnRead is enough). Null when no named pin sits on the table —
+            // the Discord {table} placeholder treats that as "no name".
+            ActiveTableName = TablePinName.Resolve(worldPos);
             StateChanged?.Invoke();
         }
 
         public static void ClearActiveTable()
         {
-            if (ActiveTablePos == null) return;
+            if (ActiveTablePos == null && ActiveTableName == null) return;
             ActiveTablePos = null;
+            ActiveTableName = null;
             StateChanged?.Invoke();
         }
 

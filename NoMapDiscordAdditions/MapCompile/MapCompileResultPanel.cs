@@ -200,13 +200,12 @@ namespace NoMapDiscordAdditions.MapCompile
             if (_result == null) return;
             var plugin = Plugin.Instance;
             if (plugin == null) return;
-            // Left CTRL held → cap raised to 4096 (high fidelity); otherwise
-            // capped to SendMaxDimension so the clipboard payload stays sane.
-            bool fullRes = Plugin.IsFullResModifierHeld();
-            plugin.CopyBytesToClipboard(_result.PngBytes, fullRes);
-            SetStatus(fullRes
-                ? "Image copied to clipboard (high resolution, capped at 4096)."
-                : "Image copied to clipboard.");
+            // CopyBytesToClipboard caps at 8192 (CaptureMaxDim) — for compile the
+            // preview PNG is already capped to Map Compile.Max Output Dimension
+            // (default 2560), so this rarely actually downscales here. SAVE is
+            // the path for native per-tile resolution.
+            plugin.CopyBytesToClipboard(_result.PngBytes);
+            SetStatus("Image copied to clipboard.");
         }
 
         // The SAVE / COPY DIR slot. First click writes the PNG to compiled/
@@ -244,12 +243,19 @@ namespace NoMapDiscordAdditions.MapCompile
             if (result == null) { _saveInProgress = false; yield break; }
 
             // Tiles are stable while Reviewing (AddTile requires Compiling), but
-            // snapshot anyway. Labels MUST be built on the main thread.
+            // snapshot anyway. Pins MUST be captured on the main thread (TMP
+            // layout, live UI components).
             var tiles = new List<MapCompileTile>(MapCompileSession.Tiles);
-            var labels = MapCompileButtons.BuildCompileLabels(tiles);
+            var pins = MapCompilePinSnapshot.Capture(out float refScreenW);
 
             MapCompositor.CompiledMap full = null;
             Exception error = null;
+
+            // SAVE-time encoder choice. Resolved here (main thread) so the
+            // ConfigEntry reads can't race with the off-thread compose. The
+            // fallback path (capped preview PNG) uses result.Extension, which
+            // is always ".png" since that path was encoded with default options.
+            var saveOpts = Plugin.GetEncodeOptions();
 
             if (tiles.Count > 0)
             {
@@ -263,10 +269,10 @@ namespace NoMapDiscordAdditions.MapCompile
                 while (!done.IsSet) yield return null;
                 done.Dispose();
 
-                // Stamp captions (Valheim TMP font, main thread) + encode.
+                // Stamp pin icons + names (Valheim TMP font, main thread) + encode.
                 if (error == null && full != null)
                 {
-                    yield return MapCompileLabelStamp.Finalize(full, labels);
+                    yield return MapCompileLabelStamp.Finalize(full, pins, tiles, refScreenW, saveOpts);
                     if (full.PngBytes == null)
                         error = new Exception("full-res encode produced no PNG");
                 }
@@ -278,15 +284,18 @@ namespace NoMapDiscordAdditions.MapCompile
             byte[] bytes;
             int w, h;
             bool clamped;
+            string ext;
             if (error == null && full != null)
             {
-                bytes = full.PngBytes; w = full.Width; h = full.Height; clamped = full.WasClamped;
+                bytes = full.PngBytes; w = full.Width; h = full.Height;
+                clamped = full.WasClamped; ext = full.Extension;
             }
             else
             {
                 if (error != null)
                     ModLog.Error($"[NoMapDiscordAdditions] Full-res recompose failed: {error.Message}");
-                bytes = result.PngBytes; w = result.Width; h = result.Height; clamped = true;
+                bytes = result.PngBytes; w = result.Width; h = result.Height;
+                clamped = true; ext = result.Extension;
             }
 
             try
@@ -294,7 +303,7 @@ namespace NoMapDiscordAdditions.MapCompile
                 MapCompileEnvironment.EnsureDirectory(MapCompileEnvironment.CompiledOutDir);
                 string ts = DateTime.Now.ToString("yyyyMMdd-HHmmss");
                 string playerName = Sanitize(Player.m_localPlayer?.GetPlayerName() ?? "player");
-                string fileName = $"{playerName}_compiled_{result.TileCount}tiles_{w}x{h}_{ts}.png";
+                string fileName = $"{playerName}_compiled_{result.TileCount}tiles_{w}x{h}_{ts}{ext}";
                 _savedFilePath = Path.Combine(MapCompileEnvironment.CompiledOutDir, fileName);
                 File.WriteAllBytes(_savedFilePath, bytes);
 
@@ -302,9 +311,11 @@ namespace NoMapDiscordAdditions.MapCompile
                 if (_saveBtnText != null) _saveBtnText.text = "COPY DIR";
 
                 string res = clamped ? "downscaled to fit 8192" : "native resolution";
-                SetStatus($"Saved {w}×{h}px ({res}) to {SanitizePathForDisplay(_savedFilePath)}");
+                string fmt = DescribeFormat(saveOpts, ext);
+                string size = FormatBytes(bytes.LongLength);
+                SetStatus($"Saved {w}×{h}px {fmt} {size} ({res}) to {SanitizePathForDisplay(_savedFilePath)}");
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
-                    $"Compiled map saved ({w}×{h}).");
+                    $"Compiled map saved ({w}×{h}, {fmt} {size}).");
             }
             catch (Exception ex)
             {
@@ -313,6 +324,30 @@ namespace NoMapDiscordAdditions.MapCompile
             }
 
             _saveInProgress = false;
+        }
+
+        // Short human-readable tag for the SAVE status line. Mirrors the
+        // encoder choice so the player can A/B formats by glancing at the
+        // panel after each save without opening the file. Falls back to the
+        // raw extension if a future encoder path lacks a dedicated case.
+        private static string DescribeFormat(MapCompositor.EncodeOptions opts, string ext)
+        {
+            switch (opts.Format)
+            {
+                case MapCompositor.EncodeFormat.Jpeg:       return $"JPEG q{opts.JpegQuality}";
+                case MapCompositor.EncodeFormat.IndexedPng: return $"PNG-{opts.IndexedPngColors}c";
+                default:                                    return ext.TrimStart('.').ToUpperInvariant();
+            }
+        }
+
+        // 1024-base size formatter. Status line uses this so the user can
+        // compare formats at a glance after each SAVE.
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes < 1024L)            return $"{bytes} B";
+            if (bytes < 1024L * 1024)     return $"{bytes / 1024.0:0.#} KB";
+            if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):0.##} MB";
+            return $"{bytes / (1024.0 * 1024 * 1024):0.##} GB";
         }
 
         private static void DoCopyDir()
@@ -343,8 +378,12 @@ namespace NoMapDiscordAdditions.MapCompile
                 SetStatus("No webhook URL configured.");
                 return;
             }
-            plugin.SendCompiledImage(_result.PngBytes, _result.TileCount);
             SetStatus("Sending to Discord...");
+            // Completion callback updates the status panel when the send
+            // finishes — without this the label stays stuck on the in-flight
+            // text and the user has no idea whether the post landed.
+            plugin.SendCompiledImage(_result.PngBytes, _result.TileCount,
+                ok => SetStatus(ok ? "Sent to Discord." : "Send failed — see log."));
         }
 
         private static void OnDiscard()

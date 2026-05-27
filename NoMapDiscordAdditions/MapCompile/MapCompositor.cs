@@ -30,13 +30,65 @@ namespace NoMapDiscordAdditions.MapCompile
     /// </summary>
     public static class MapCompositor
     {
+        /// <summary>
+        /// Pixel-format / container choice for the finalized image. Map captures
+        /// are opaque RGB, so all three options round-trip the same content;
+        /// they trade visual fidelity for file size:
+        ///   Png        — 24bpp PNG, default zlib compression. Lossless. Big.
+        ///   Jpeg       — 24bpp JPEG at the configured quality. Lossy but tiny
+        ///                — fastest size win for cases where pin-label edges
+        ///                don't need pixel-perfect crispness.
+        ///   IndexedPng — 8bpp palette PNG, palette built via median-cut on a
+        ///                15-bit histogram with Floyd-Steinberg dither at encode.
+        ///                Lossy in colour count only; keeps label edges crisp
+        ///                because there's no DCT ringing. Maps quantize very
+        ///                well (~6 dominant colours) so this often beats JPEG
+        ///                on size while keeping labels sharp.
+        /// </summary>
+        public enum EncodeFormat { Png, Jpeg, IndexedPng }
+
+        /// <summary>
+        /// Encoder parameters threaded through the finalize step. Use
+        /// <see cref="Default"/> for the lossless PNG path the preview/COPY/SEND
+        /// flows already expect; SAVE constructs its own from the Plugin config.
+        /// </summary>
+        public struct EncodeOptions
+        {
+            public EncodeFormat Format;
+            // JPEG quality 1..100 (System.Drawing's encoder accepts this as a
+            // long parameter). Only consulted when Format == Jpeg.
+            public int JpegQuality;
+            // Palette size for indexed PNG, 2..256. Only consulted when
+            // Format == IndexedPng. Smaller = smaller file + more banding.
+            public int IndexedPngColors;
+
+            public static EncodeOptions Default => new EncodeOptions
+            {
+                Format = EncodeFormat.Png,
+                JpegQuality = 88,
+                IndexedPngColors = 64,
+            };
+
+            // File extension (with leading dot) for the chosen format. Used by
+            // the SAVE path so the on-disk filename matches the actual bytes.
+            public string Extension =>
+                Format == EncodeFormat.Jpeg ? ".jpg" : ".png";
+        }
+
         public class CompiledMap
         {
-            // Final encoded PNG. Null until the finalize step (Unity TMP label
-            // stamp + single PNG encode) runs — Compose/ComposeNative now only
-            // produce the pixel buffer; encoding moved out so captions can be
-            // rendered with Valheim's real TMP font on the main thread.
+            // Final encoded image bytes (PNG or JPEG depending on the
+            // EncodeOptions used at finalize). Null until the finalize step
+            // (Unity TMP label stamp + single encode) runs — Compose/ComposeNative
+            // now only produce the pixel buffer; encoding moved out so captions
+            // can be rendered with Valheim's real TMP font on the main thread.
             public byte[] PngBytes;
+            // File extension (".png" or ".jpg") matching the bytes in PngBytes.
+            // Set by the finalize step from the EncodeOptions in effect; SAVE
+            // reads this so the on-disk filename matches the actual format.
+            // Defaults to ".png" so the preview/COPY/SEND paths (which never
+            // override the format) keep their previous behaviour.
+            public string Extension = ".png";
             // Raw composite, BGRA, top-down, tightly packed (stride = Width*4),
             // opaque. Kept so the finalize step can either encode it directly
             // (no labels) or hand it to the label stamp without re-decoding.
@@ -63,26 +115,32 @@ namespace NoMapDiscordAdditions.MapCompile
         private const int NativeMaxDim = 8192;
 
         /// <summary>
+        /// One Minimap pin to draw on the finished composite (icon + name).
+        /// Snapshotted on the main thread from <see cref="MapCompile.MapCompilePinSnapshot"/>;
+        /// the stamp pass turns this into a sprite blit + TMP caption so pins
+        /// land at a consistent size in tile-overlap regions (per-tile baked
+        /// pins were getting eaten by the chroma-pick).
+        /// </summary>
+        public struct PinDraw
+        {
+            public float WorldX;
+            public float WorldZ;
+            public UnityEngine.Sprite Icon;
+            public UnityEngine.Color32 Tint;
+            // Pin size on the player's reference screen, in screen px. The
+            // stamp converts to composite px via (composite_W / refScreenW).
+            public float ScreenPxW;
+            public float ScreenPxH;
+            // Pin caption — stamped below the icon when non-empty (TablePinName.Clean
+            // is applied at snapshot time, so the ZenMap tracking suffix is gone).
+            public string Name;
+        }
+
+        /// <summary>
         /// Compose the given tiles into one PNG. Output is sized so the longest
         /// world-axis maps to <paramref name="maxDimensionPx"/> pixels (clamped
         /// to a sensible floor of 512 to avoid degenerate output).
         /// </summary>
-        /// <summary>
-        /// A "{dist}m {dir}" caption to stamp onto the finished composite at a
-        /// world position. Compile mode draws labels here — once, on top of the
-        /// merged image — instead of baking them into every tile. Baked labels
-        /// were getting eaten by the chroma-pick: a white caption is near-zero
-        /// chroma, so in any region a later tile overlapped an already-painted
-        /// tile the label lost to the existing terrain and only the
-        /// first-painted tile kept its captions.
-        /// </summary>
-        public struct LabelDraw
-        {
-            public float WorldX;   // world X
-            public float WorldZ;   // world Z (north = +)
-            public string Text;
-        }
-
         public static CompiledMap Compose(IReadOnlyList<MapCompileTile> tiles, int maxDimensionPx)
         {
             if (!ComputeBounds(tiles, out var worldMin, out var worldMax, out var worldSize))
@@ -348,15 +406,17 @@ namespace NoMapDiscordAdditions.MapCompile
                         outBuf[oi + 1] = tg;
                         outBuf[oi + 2] = tr;
                     }
-                    else if (tileChroma == outChroma)
-                    {
-                        // Tie — average for a softer seam. Avoids hard edges
-                        // when two captures of the same area are equally informative.
-                        outBuf[oi]     = (byte)((tb + ob) >> 1);
-                        outBuf[oi + 1] = (byte)((tg + og) >> 1);
-                        outBuf[oi + 2] = (byte)((tr + or) >> 1);
-                    }
-                    // else: existing output pixel wins, no write needed.
+                    // Tie or lower chroma: keep the existing pixel. We used to
+                    // average on a tie ("softer seam"), but the floor/ceil
+                    // destination math leaves a 1-pixel overlap column at
+                    // every adjacent-tile boundary; averaging that column
+                    // with both tiles' edge pixels produces a visibly
+                    // different colour from the un-averaged interior columns
+                    // on either side, which lights up as a thin vertical (or
+                    // horizontal) seam on the composite. Keeping the
+                    // first-paint pixel makes the boundary column read as a
+                    // continuation of whichever tile got there first instead
+                    // of a 1-pixel-wide blend.
                 }
             }
         }
@@ -405,12 +465,23 @@ namespace NoMapDiscordAdditions.MapCompile
             return dest;
         }
 
-        // Encode a BGRA top-down buffer as a 24bpp BGR PNG. The composite is
-        // always opaque, so dropping alpha saves ~25% of the file with no
+        // Encode a BGRA top-down buffer as a 24bpp BGR PNG. Back-compat overload
+        // for callers that always want the lossless PNG (preview/COPY/SEND).
+        internal static byte[] EncodeBgra(byte[] bgra, int w, int h)
+            => EncodeBgra(bgra, w, h, EncodeOptions.Default);
+
+        // Encode a BGRA top-down buffer in the requested format. The composite
+        // is always opaque, so dropping alpha saves ~25% of the file with no
         // visual loss. Pure System.Drawing — safe to call off the main thread
         // (the finalize step does, after the Unity label stamp).
-        internal static byte[] EncodeBgra(byte[] bgra, int w, int h)
+        internal static byte[] EncodeBgra(byte[] bgra, int w, int h, EncodeOptions opts)
         {
+            // Indexed PNG is a separate code path: System.Drawing's 8bpp
+            // pipeline needs its own LockBits + palette setup, and a 24bpp
+            // intermediate would just waste memory at native (8192²) sizes.
+            if (opts.Format == EncodeFormat.IndexedPng)
+                return EncodeIndexedPngFromBgra(bgra, w, h, opts.IndexedPngColors);
+
             using (var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb))
             {
                 var rect = new Rectangle(0, 0, w, h);
@@ -439,20 +510,23 @@ namespace NoMapDiscordAdditions.MapCompile
                     bmp.UnlockBits(bd);
                 }
 
-                using (var ms = new MemoryStream())
-                {
-                    bmp.Save(ms, ImageFormat.Png);
-                    return ms.ToArray();
-                }
+                return SaveBitmap(bmp, opts);
             }
         }
 
-        // Encode a Unity Color32[] (RGBA, BOTTOM-UP — Texture/GetPixels32 row
-        // order) as a 24bpp PNG, flipping rows so the PNG is top-down. Used by
-        // the finalize step after labels have been stamped into the buffer.
-        // Pure System.Drawing — runs off the main thread.
+        // Back-compat overload — PNG with default options.
         internal static byte[] EncodeRgbaBottomUp(UnityEngine.Color32[] rgba, int w, int h)
+            => EncodeRgbaBottomUp(rgba, w, h, EncodeOptions.Default);
+
+        // Encode a Unity Color32[] (RGBA, BOTTOM-UP — Texture/GetPixels32 row
+        // order) in the requested format, flipping rows so the output is
+        // top-down. Used by the finalize step after labels have been stamped
+        // into the buffer. Pure System.Drawing — runs off the main thread.
+        internal static byte[] EncodeRgbaBottomUp(UnityEngine.Color32[] rgba, int w, int h, EncodeOptions opts)
         {
+            if (opts.Format == EncodeFormat.IndexedPng)
+                return EncodeIndexedPngFromRgbaBottomUp(rgba, w, h, opts.IndexedPngColors);
+
             using (var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb))
             {
                 var rect = new Rectangle(0, 0, w, h);
@@ -463,7 +537,7 @@ namespace NoMapDiscordAdditions.MapCompile
                     byte[] rowBuf = new byte[dstStride];
                     for (int y = 0; y < h; y++)
                     {
-                        // PNG row y (top-down) ← buffer row (h-1-y) (bottom-up).
+                        // Output row y (top-down) ← buffer row (h-1-y) (bottom-up).
                         int src = (h - 1 - y) * w;
                         for (int x = 0; x < w; x++)
                         {
@@ -482,11 +556,545 @@ namespace NoMapDiscordAdditions.MapCompile
                     bmp.UnlockBits(bd);
                 }
 
+                return SaveBitmap(bmp, opts);
+            }
+        }
+
+        /// <summary>
+        /// Decode any image bytes (PNG, JPEG, BMP, …) and re-encode in the
+        /// requested format. Optionally caps the longest dimension first —
+        /// pass <paramref name="maxDim"/> &lt;= 0 to disable resize.
+        ///
+        /// Single entry point for capture pipelines that want to change
+        /// format/size after the initial capture: SEND TO DISCORD recodes the
+        /// PNG-from-capture into the user's preferred Output Format; COPY
+        /// recodes into indexed PNG; both can also clamp the longest edge.
+        /// Safe to call off the main thread (pure System.Drawing).
+        ///
+        /// Returns the input bytes unchanged on null/empty input or on decode
+        /// failure (logged) so SEND/COPY never silently produce no output.
+        /// </summary>
+        public static byte[] Recode(byte[] inputBytes, EncodeOptions opts, int maxDim = 0)
+        {
+            if (inputBytes == null || inputBytes.Length == 0) return inputBytes;
+
+            try
+            {
+                using (var ms = new MemoryStream(inputBytes))
+                using (var src = new Bitmap(ms))
+                {
+                    int w = src.Width, h = src.Height;
+                    Bitmap resized = null;
+                    try
+                    {
+                        Bitmap source = src;
+                        if (maxDim > 0 && Math.Max(w, h) > maxDim)
+                        {
+                            float k = (float)maxDim / Math.Max(w, h);
+                            int newW = Math.Max(1, (int)Math.Round(w * k));
+                            int newH = Math.Max(1, (int)Math.Round(h * k));
+                            resized = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
+                            using (var g = System.Drawing.Graphics.FromImage(resized))
+                            {
+                                g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                                g.PixelOffsetMode = PixelOffsetMode.Half;
+                                g.CompositingMode = CompositingMode.SourceCopy;
+                                g.DrawImage(src, 0, 0, newW, newH);
+                            }
+                            w = newW; h = newH;
+                            source = resized;
+                        }
+
+                        // ExtractBgra below LockBits-converts whatever pixel
+                        // format the source landed in (24bpp from a JPEG, 8bpp
+                        // from an indexed PNG, …) into Format32bppArgb on the
+                        // way out, so callers never have to pre-convert.
+                        byte[] bgra = ExtractBgra(source);
+                        byte[] result = EncodeBgra(bgra, w, h, opts);
+                        ModLog.Info($"[NoMapDiscordAdditions] Recoded {inputBytes.Length} -> {result.Length} bytes " +
+                                    $"({w}×{h}, format={opts.Format}).");
+                        return result;
+                    }
+                    finally
+                    {
+                        resized?.Dispose();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] Recode failed, returning original bytes: {ex.Message}");
+                return inputBytes;
+            }
+        }
+
+        // ── Format dispatch ──────────────────────────────────────────────────
+
+        // PNG / JPEG branch — IndexedPng has already been routed away by the
+        // callers above. JPEG quality is passed via EncoderParameters because
+        // GDI+'s default (75) is noticeably soft on map terrain.
+        private static byte[] SaveBitmap(Bitmap bmp, EncodeOptions opts)
+        {
+            using (var ms = new MemoryStream())
+            {
+                if (opts.Format == EncodeFormat.Jpeg)
+                {
+                    var enc = GetJpegEncoder();
+                    if (enc != null)
+                    {
+                        int q = Math.Min(100, Math.Max(1, opts.JpegQuality));
+                        using (var ps = new EncoderParameters(1))
+                        {
+                            ps.Param[0] = new EncoderParameter(Encoder.Quality, (long)q);
+                            bmp.Save(ms, enc, ps);
+                            return ms.ToArray();
+                        }
+                    }
+                    // Fallback: encoder lookup failed (very rare); fall through
+                    // to the default JPEG encoder so we still produce a file.
+                    bmp.Save(ms, ImageFormat.Jpeg);
+                    return ms.ToArray();
+                }
+
+                bmp.Save(ms, ImageFormat.Png);
+                return ms.ToArray();
+            }
+        }
+
+        private static ImageCodecInfo GetJpegEncoder()
+        {
+            foreach (var c in ImageCodecInfo.GetImageEncoders())
+                if (c.FormatID == ImageFormat.Jpeg.Guid) return c;
+            return null;
+        }
+
+        // ── Indexed PNG (median-cut + Floyd-Steinberg dither) ────────────────
+
+        // BGRA top-down → 8bpp indexed PNG.
+        private static byte[] EncodeIndexedPngFromBgra(byte[] bgra, int w, int h, int maxColors)
+        {
+            int n = w * h;
+            var rgb = new byte[n * 3];
+            for (int i = 0; i < n; i++)
+            {
+                int s = i * 4;
+                int d = i * 3;
+                rgb[d]     = bgra[s + 2]; // R
+                rgb[d + 1] = bgra[s + 1]; // G
+                rgb[d + 2] = bgra[s];     // B
+            }
+            return EncodeIndexedPng(rgb, w, h, maxColors);
+        }
+
+        // RGBA bottom-up → 8bpp indexed PNG. We flip during the RGB packing
+        // step so the quantizer sees a top-down view (matches the output
+        // orientation expected by viewers).
+        private static byte[] EncodeIndexedPngFromRgbaBottomUp(UnityEngine.Color32[] rgba, int w, int h, int maxColors)
+        {
+            int n = w * h;
+            var rgb = new byte[n * 3];
+            for (int y = 0; y < h; y++)
+            {
+                int srcRow = (h - 1 - y) * w;
+                int dstRow = y * w * 3;
+                for (int x = 0; x < w; x++)
+                {
+                    var c = rgba[srcRow + x];
+                    int d = dstRow + x * 3;
+                    rgb[d]     = c.r;
+                    rgb[d + 1] = c.g;
+                    rgb[d + 2] = c.b;
+                }
+            }
+            return EncodeIndexedPng(rgb, w, h, maxColors);
+        }
+
+        // Build palette via median-cut on a 15-bit histogram, then write an
+        // 8bpp indexed PNG with Floyd-Steinberg dither. The 15-bit histogram
+        // (32k buckets, RRRRR-GGGGG-BBBBB) bounds memory regardless of input
+        // size — at 8192² we'd otherwise have 67M entries to keep track of.
+        private static byte[] EncodeIndexedPng(byte[] rgbTopDown, int w, int h, int maxColors)
+        {
+            maxColors = Math.Min(256, Math.Max(2, maxColors));
+
+            // 1. Histogram on 5-bit-per-channel buckets.
+            //    bucket = (r5 << 10) | (g5 << 5) | b5
+            //    Stored values are full-precision sums so the palette mean
+            //    keeps fidelity that pre-quantisation alone would lose.
+            const int BucketCount = 32 * 32 * 32;
+            var counts = new int[BucketCount];
+            var sumR = new long[BucketCount];
+            var sumG = new long[BucketCount];
+            var sumB = new long[BucketCount];
+            int n = w * h;
+            for (int i = 0; i < n; i++)
+            {
+                int p = i * 3;
+                byte r = rgbTopDown[p];
+                byte g = rgbTopDown[p + 1];
+                byte b = rgbTopDown[p + 2];
+                int idx = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+                counts[idx]++;
+                sumR[idx] += r;
+                sumG[idx] += g;
+                sumB[idx] += b;
+            }
+
+            // 2. Median-cut on the populated buckets. A "box" is the AABB of
+            //    the 5-bit colour cube it covers; split repeatedly along the
+            //    widest axis until we have maxColors leaves.
+            var boxes = new List<MedianCutBox>(maxColors);
+            var initial = new MedianCutBox();
+            initial.Init(counts, sumR, sumG, sumB);
+            if (initial.PixelCount == 0)
+            {
+                // Degenerate input — fall back to a single-colour palette so we
+                // still produce a valid PNG instead of crashing the save.
+                return EncodeIndexedPngWithPalette(rgbTopDown, w, h,
+                    new byte[] { 0, 0, 0 }, new int[BucketCount],
+                    paletteSize: 1);
+            }
+            boxes.Add(initial);
+
+            while (boxes.Count < maxColors)
+            {
+                // Pick the box with the largest "volume × count" — splitting
+                // it gives the biggest reduction in quantisation error.
+                int splitIdx = -1;
+                long bestScore = -1;
+                for (int i = 0; i < boxes.Count; i++)
+                {
+                    var b = boxes[i];
+                    if (b.IsAtomic) continue;
+                    long score = (long)b.LongestExtent * b.PixelCount;
+                    if (score > bestScore) { bestScore = score; splitIdx = i; }
+                }
+                if (splitIdx < 0) break;
+                var parent = boxes[splitIdx];
+                if (!parent.TrySplit(counts, sumR, sumG, sumB, out var left, out var right))
+                {
+                    parent.IsAtomic = true;
+                    boxes[splitIdx] = parent;
+                    continue;
+                }
+                boxes[splitIdx] = left;
+                boxes.Add(right);
+            }
+
+            // 3. Palette + a 32³ RGB → palette-index LUT.
+            int paletteSize = boxes.Count;
+            var palette = new byte[paletteSize * 3];
+            for (int i = 0; i < paletteSize; i++)
+            {
+                boxes[i].MeanColor(counts, sumR, sumG, sumB,
+                    out byte pr, out byte pg, out byte pb);
+                palette[i * 3]     = pr;
+                palette[i * 3 + 1] = pg;
+                palette[i * 3 + 2] = pb;
+            }
+
+            // Map each populated histogram bucket to its closest palette entry
+            // (5-bit centres → palette nearest neighbour). 32k entries, brute-
+            // forced — negligible against the per-pixel dither pass.
+            var lut = new int[BucketCount];
+            for (int b5 = 0; b5 < 32; b5++)
+                for (int g5 = 0; g5 < 32; g5++)
+                    for (int r5 = 0; r5 < 32; r5++)
+                    {
+                        int idx = (r5 << 10) | (g5 << 5) | b5;
+                        int br = (r5 << 3) | (r5 >> 2);  // bucket centre, 0..255
+                        int bg = (g5 << 3) | (g5 >> 2);
+                        int bb = (b5 << 3) | (b5 >> 2);
+                        int best = 0;
+                        int bestErr = int.MaxValue;
+                        for (int p = 0; p < paletteSize; p++)
+                        {
+                            int dr = br - palette[p * 3];
+                            int dg = bg - palette[p * 3 + 1];
+                            int db = bb - palette[p * 3 + 2];
+                            int err = dr * dr + dg * dg + db * db;
+                            if (err < bestErr) { bestErr = err; best = p; }
+                        }
+                        lut[idx] = best;
+                    }
+
+            return EncodeIndexedPngWithPalette(rgbTopDown, w, h, palette, lut, paletteSize);
+        }
+
+        // Write the indexed PNG. Walks pixels in scanline order applying
+        // Floyd-Steinberg dither; the LUT gives a fast first-cut palette
+        // match, then we refine against the full palette using the dithered
+        // colour (the LUT alone would clip the dither to bucket centres).
+        private static byte[] EncodeIndexedPngWithPalette(
+            byte[] rgbTopDown, int w, int h,
+            byte[] palette, int[] lut, int paletteSize)
+        {
+            // Error-diffusion buffers: one row's worth of (R,G,B) error
+            // accumulators, current and next. FS is a 2-row kernel.
+            var errCurR = new short[w + 2];
+            var errCurG = new short[w + 2];
+            var errCurB = new short[w + 2];
+            var errNextR = new short[w + 2];
+            var errNextG = new short[w + 2];
+            var errNextB = new short[w + 2];
+
+            // Indexed pixel output. We'll DMA this into the Bitmap via LockBits
+            // after the dither pass to avoid touching the managed/unmanaged
+            // boundary per pixel.
+            var indexed = new byte[w * h];
+
+            for (int y = 0; y < h; y++)
+            {
+                int rowSrc = y * w * 3;
+                int rowDst = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    int s = rowSrc + x * 3;
+                    int r = rgbTopDown[s]     + errCurR[x + 1];
+                    int g = rgbTopDown[s + 1] + errCurG[x + 1];
+                    int b = rgbTopDown[s + 2] + errCurB[x + 1];
+                    if (r < 0) r = 0; else if (r > 255) r = 255;
+                    if (g < 0) g = 0; else if (g > 255) g = 255;
+                    if (b < 0) b = 0; else if (b > 255) b = 255;
+
+                    // Palette lookup via the bucket LUT. Bucket centres are
+                    // within ~4 units of the actual pixel value so this is
+                    // close enough to a real nearest-neighbour search; FS
+                    // dither absorbs the residual error. A per-pixel scan of
+                    // the full palette would be exact but adds an O(N×P) pass
+                    // (~4B ops at 8192² × 64-colour palette).
+                    int bucket = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+                    int pi = lut[bucket];
+                    indexed[rowDst + x] = (byte)pi;
+
+                    int pr = palette[pi * 3];
+                    int pg = palette[pi * 3 + 1];
+                    int pb = palette[pi * 3 + 2];
+                    int er = r - pr;
+                    int eg = g - pg;
+                    int eb = b - pb;
+
+                    // FS kernel (right=7/16, BL=3/16, B=5/16, BR=1/16).
+                    errCurR[x + 2]  += (short)(er * 7 / 16);
+                    errCurG[x + 2]  += (short)(eg * 7 / 16);
+                    errCurB[x + 2]  += (short)(eb * 7 / 16);
+                    errNextR[x]     += (short)(er * 3 / 16);
+                    errNextG[x]     += (short)(eg * 3 / 16);
+                    errNextB[x]     += (short)(eb * 3 / 16);
+                    errNextR[x + 1] += (short)(er * 5 / 16);
+                    errNextG[x + 1] += (short)(eg * 5 / 16);
+                    errNextB[x + 1] += (short)(eb * 5 / 16);
+                    errNextR[x + 2] += (short)(er * 1 / 16);
+                    errNextG[x + 2] += (short)(eg * 1 / 16);
+                    errNextB[x + 2] += (short)(eb * 1 / 16);
+                }
+
+                // Rotate error buffers for the next row.
+                var tR = errCurR; errCurR = errNextR; errNextR = tR;
+                var tG = errCurG; errCurG = errNextG; errNextG = tG;
+                var tB = errCurB; errCurB = errNextB; errNextB = tB;
+                Array.Clear(errNextR, 0, errNextR.Length);
+                Array.Clear(errNextG, 0, errNextG.Length);
+                Array.Clear(errNextB, 0, errNextB.Length);
+            }
+
+            using (var bmp = new Bitmap(w, h, PixelFormat.Format8bppIndexed))
+            {
+                // ColorPalette is opaque + immutable from this side: you must
+                // get it, mutate the local copy, then assign back to apply.
+                var cp = bmp.Palette;
+                // GDI+ hands out a palette pre-sized to the bitmap's format
+                // (256 entries for 8bpp). We only fill the first paletteSize
+                // entries and leave the rest at (0,0,0) — unused indices are
+                // never written into the bitmap so the extras don't matter.
+                for (int i = 0; i < paletteSize && i < cp.Entries.Length; i++)
+                {
+                    cp.Entries[i] = System.Drawing.Color.FromArgb(255,
+                        palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2]);
+                }
+                bmp.Palette = cp;
+
+                var rect = new Rectangle(0, 0, w, h);
+                var bd = bmp.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
+                try
+                {
+                    int dstStride = bd.Stride;
+                    if (dstStride == w)
+                    {
+                        Marshal.Copy(indexed, 0, bd.Scan0, indexed.Length);
+                    }
+                    else
+                    {
+                        // Padded stride — copy row by row.
+                        for (int y = 0; y < h; y++)
+                        {
+                            var rowPtr = new IntPtr(bd.Scan0.ToInt64() + (long)y * dstStride);
+                            Marshal.Copy(indexed, y * w, rowPtr, w);
+                        }
+                    }
+                }
+                finally
+                {
+                    bmp.UnlockBits(bd);
+                }
+
                 using (var ms = new MemoryStream())
                 {
                     bmp.Save(ms, ImageFormat.Png);
                     return ms.ToArray();
                 }
+            }
+        }
+
+        // ── Median-cut box ───────────────────────────────────────────────────
+        // Operates on the 32³ histogram only — no per-pixel state. r/g/b axes
+        // are inclusive 5-bit bucket coordinates (0..31).
+        private struct MedianCutBox
+        {
+            public byte RMin, RMax, GMin, GMax, BMin, BMax;
+            public int PixelCount;
+            // Marked true when a split attempt failed (single bucket, etc.) so
+            // we don't keep retrying the same dead-end box.
+            public bool IsAtomic;
+
+            public int LongestExtent
+            {
+                get
+                {
+                    int dr = RMax - RMin;
+                    int dg = GMax - GMin;
+                    int db = BMax - BMin;
+                    return Math.Max(dr, Math.Max(dg, db));
+                }
+            }
+
+            public void Init(int[] counts, long[] sumR, long[] sumG, long[] sumB)
+            {
+                RMin = 31; GMin = 31; BMin = 31;
+                RMax = 0;  GMax = 0;  BMax = 0;
+                long total = 0;
+                for (int r = 0; r < 32; r++)
+                    for (int g = 0; g < 32; g++)
+                        for (int b = 0; b < 32; b++)
+                        {
+                            int idx = (r << 10) | (g << 5) | b;
+                            if (counts[idx] == 0) continue;
+                            if (r < RMin) RMin = (byte)r;
+                            if (r > RMax) RMax = (byte)r;
+                            if (g < GMin) GMin = (byte)g;
+                            if (g > GMax) GMax = (byte)g;
+                            if (b < BMin) BMin = (byte)b;
+                            if (b > BMax) BMax = (byte)b;
+                            total += counts[idx];
+                        }
+                if (total == 0)
+                {
+                    // Empty histogram — leave box at min=max=0 so IsAtomic is
+                    // forced and Mean() returns black for everything.
+                    RMin = GMin = BMin = 0; RMax = GMax = BMax = 0;
+                }
+                PixelCount = (int)Math.Min(total, int.MaxValue);
+            }
+
+            // Split along the longest axis at the population median. Each leaf
+            // box inherits the same min/max bounds on the other two axes.
+            public bool TrySplit(int[] counts, long[] sumR, long[] sumG, long[] sumB,
+                out MedianCutBox left, out MedianCutBox right)
+            {
+                left = default; right = default;
+                int dr = RMax - RMin;
+                int dg = GMax - GMin;
+                int db = BMax - BMin;
+                int axis = 0; // 0=R, 1=G, 2=B
+                if (dg >= dr && dg >= db) axis = 1;
+                else if (db >= dr && db >= dg) axis = 2;
+
+                int axisMin = axis == 0 ? RMin : (axis == 1 ? GMin : BMin);
+                int axisMax = axis == 0 ? RMax : (axis == 1 ? GMax : BMax);
+                if (axisMax <= axisMin) return false; // Already a single slab.
+
+                // Population per axis bucket inside this box.
+                var pop = new int[32];
+                AccumulateAxis(counts, axis, pop);
+                long half = PixelCount / 2;
+                long cum = 0;
+                int splitAt = axisMin;
+                for (int i = axisMin; i <= axisMax; i++)
+                {
+                    cum += pop[i];
+                    if (cum >= half) { splitAt = i; break; }
+                }
+                if (splitAt >= axisMax) splitAt = axisMax - 1;
+                if (splitAt < axisMin) splitAt = axisMin;
+
+                left = this; right = this;
+                if (axis == 0)
+                {
+                    left.RMax = (byte)splitAt;
+                    right.RMin = (byte)(splitAt + 1);
+                }
+                else if (axis == 1)
+                {
+                    left.GMax = (byte)splitAt;
+                    right.GMin = (byte)(splitAt + 1);
+                }
+                else
+                {
+                    left.BMax = (byte)splitAt;
+                    right.BMin = (byte)(splitAt + 1);
+                }
+
+                left.PixelCount = (int)Math.Min(int.MaxValue, SumIn(counts, ref left));
+                right.PixelCount = (int)Math.Min(int.MaxValue, SumIn(counts, ref right));
+                left.IsAtomic = false;
+                right.IsAtomic = false;
+                if (left.PixelCount == 0 || right.PixelCount == 0) return false;
+                return true;
+            }
+
+            private void AccumulateAxis(int[] counts, int axis, int[] pop)
+            {
+                for (int r = RMin; r <= RMax; r++)
+                    for (int g = GMin; g <= GMax; g++)
+                        for (int b = BMin; b <= BMax; b++)
+                        {
+                            int c = counts[(r << 10) | (g << 5) | b];
+                            if (c == 0) continue;
+                            int k = axis == 0 ? r : (axis == 1 ? g : b);
+                            pop[k] += c;
+                        }
+            }
+
+            private static long SumIn(int[] counts, ref MedianCutBox box)
+            {
+                long s = 0;
+                for (int r = box.RMin; r <= box.RMax; r++)
+                    for (int g = box.GMin; g <= box.GMax; g++)
+                        for (int b = box.BMin; b <= box.BMax; b++)
+                            s += counts[(r << 10) | (g << 5) | b];
+                return s;
+            }
+
+            public void MeanColor(int[] counts, long[] sumR, long[] sumG, long[] sumB,
+                out byte r, out byte g, out byte b)
+            {
+                long cnt = 0, sR = 0, sG = 0, sB = 0;
+                for (int rr = RMin; rr <= RMax; rr++)
+                    for (int gg = GMin; gg <= GMax; gg++)
+                        for (int bb = BMin; bb <= BMax; bb++)
+                        {
+                            int idx = (rr << 10) | (gg << 5) | bb;
+                            int c = counts[idx];
+                            if (c == 0) continue;
+                            cnt += c;
+                            sR += sumR[idx];
+                            sG += sumG[idx];
+                            sB += sumB[idx];
+                        }
+                if (cnt == 0) { r = g = b = 0; return; }
+                r = (byte)Math.Min(255, Math.Max(0, sR / cnt));
+                g = (byte)Math.Min(255, Math.Max(0, sG / cnt));
+                b = (byte)Math.Min(255, Math.Max(0, sB / cnt));
             }
         }
     }

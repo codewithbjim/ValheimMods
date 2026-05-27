@@ -8,42 +8,75 @@ using UnityEngine;
 namespace NoMapDiscordAdditions.MapCompile
 {
     /// <summary>
-    /// Finalizes a <see cref="MapCompositor.CompiledMap"/>: stamps the table
-    /// captions onto the composite using Valheim's real TMP font (the exact
+    /// Finalizes a <see cref="MapCompositor.CompiledMap"/>: stamps pin icons
+    /// + pin names onto the composite using Valheim's real TMP font (the exact
     /// SDF asset + outline material the in-game UI uses), then encodes one PNG.
     ///
-    /// The label pass MUST run on the Unity main thread (TMP layout + font
-    /// atlas reads), so it can't live inside the off-thread System.Drawing
-    /// compose. Flow: compose off-thread → this stamps on the main thread →
-    /// the single PNG encode is pushed back off-thread. Captions are drawn once
-    /// onto the merged image (never baked per tile — they'd be eaten by the
-    /// chroma-pick in tile-overlap regions).
+    /// MUST run on the Unity main thread (TMP layout + font atlas reads), so
+    /// it can't live inside the off-thread System.Drawing compose. Flow:
+    /// compose off-thread → this stamps on the main thread → the single PNG
+    /// encode is pushed back off-thread. Pins are drawn once onto the merged
+    /// image (never baked per tile — they'd be eaten by the chroma-pick in
+    /// tile-overlap regions, and would land at inconsistent sizes).
     /// </summary>
     public static class MapCompileLabelStamp
     {
         /// <summary>
-        /// Main-thread + off-thread finalize. Stamps labels (if any, and if the
-        /// Valheim font resolves) into the composite, then encodes
+        /// Main-thread + off-thread finalize. Stamps pin icons + names (when
+        /// the Valheim font resolves) into the composite, then encodes
         /// <see cref="MapCompositor.CompiledMap.PngBytes"/>. Yield this from a
         /// coroutine; on return <c>r.PngBytes</c> is set (or null on failure).
+        ///
+        /// <paramref name="pins"/> are the snapshot-time visible Minimap pins.
+        /// <paramref name="referenceScreenWidth"/> is the on-screen large-map
+        /// width at snapshot time — pins keep their on-screen size on the
+        /// composite by scaling with (composite_W / referenceScreenWidth).
         /// </summary>
         public static IEnumerator Finalize(MapCompositor.CompiledMap r,
-            IReadOnlyList<MapCompositor.LabelDraw> labels)
+            IReadOnlyList<MapCompositor.PinDraw> pins,
+            IReadOnlyList<MapCompileTile> tiles,
+            float referenceScreenWidth)
+            => Finalize(r, pins, tiles, referenceScreenWidth, MapCompositor.EncodeOptions.Default);
+
+        /// <summary>
+        /// As <see cref="Finalize(MapCompositor.CompiledMap, IReadOnlyList{MapCompositor.PinDraw}, IReadOnlyList{MapCompileTile}, float)"/>,
+        /// but lets the caller pick an encoder format (PNG, JPEG, IndexedPNG +
+        /// parameters). Currently only the SAVE path passes anything other than
+        /// <see cref="MapCompositor.EncodeOptions.Default"/> — preview / COPY /
+        /// SEND deliberately keep the lossless PNG so clipboard paste targets
+        /// and Discord previews keep working.
+        ///
+        /// <paramref name="tiles"/> are clipped against each pin's world
+        /// position — only pins falling inside a captured tile's world rect
+        /// are stamped. The composite's bounding rect includes the gaps
+        /// between non-adjacent tiles, so a bounding-only cull would draw
+        /// pins on the black "no data" regions between tiles.
+        /// </summary>
+        public static IEnumerator Finalize(MapCompositor.CompiledMap r,
+            IReadOnlyList<MapCompositor.PinDraw> pins,
+            IReadOnlyList<MapCompileTile> tiles,
+            float referenceScreenWidth,
+            MapCompositor.EncodeOptions opts)
         {
             if (r == null || r.Bgra == null) yield break;
+            // Stash the extension on the result up front so callers can use it
+            // for filename construction even if the encode itself bails.
+            r.Extension = opts.Extension;
 
-            // Main thread: try to stamp labels. Returns a labelled RGBA
-            // (bottom-up) buffer, or null if there's nothing to draw / the
-            // font is unavailable (then we encode the raw BGRA directly).
+            // Main thread: try to stamp pins. Returns a stamped RGBA
+            // (bottom-up) buffer, or null when no pin survives the on-canvas
+            // cull (then we encode the raw BGRA directly). Missing font only
+            // skips pin captions — icons still rasterize.
             Color32[] labelled = null;
             try
             {
                 labelled = Stamp(r.Bgra, r.Width, r.Height,
-                    r.WorldMin, r.WorldMax - r.WorldMin, labels);
+                    r.WorldMin, r.WorldMax - r.WorldMin,
+                    pins, tiles, referenceScreenWidth);
             }
             catch (Exception ex)
             {
-                ModLog.Error($"[NoMapDiscordAdditions] Label stamp failed: {ex.Message}");
+                ModLog.Error($"[NoMapDiscordAdditions] Pin stamp failed: {ex.Message}");
                 labelled = null;
             }
 
@@ -65,8 +98,8 @@ namespace NoMapDiscordAdditions.MapCompile
                 try
                 {
                     png = labelled != null
-                        ? MapCompositor.EncodeRgbaBottomUp(labelled, r.Width, r.Height)
-                        : MapCompositor.EncodeBgra(rawBgra, r.Width, r.Height);
+                        ? MapCompositor.EncodeRgbaBottomUp(labelled, r.Width, r.Height, opts)
+                        : MapCompositor.EncodeBgra(rawBgra, r.Width, r.Height, opts);
                 }
                 catch (Exception ex) { err = ex; }
                 finally { done.Set(); }
@@ -83,49 +116,89 @@ namespace NoMapDiscordAdditions.MapCompile
         // X linear, Z flipped so north is at the top of the image.
         private static Color32[] Stamp(byte[] bgraTopDown, int w, int h,
             Vector2 worldMin, Vector2 worldSize,
-            IReadOnlyList<MapCompositor.LabelDraw> labels)
+            IReadOnlyList<MapCompositor.PinDraw> pins,
+            IReadOnlyList<MapCompileTile> tiles,
+            float referenceScreenWidth)
         {
-            if (labels == null || labels.Count == 0) return null;
             if (worldSize.x <= 0f || worldSize.y <= 0f) return null;
+            if (pins == null || pins.Count == 0) return null;
 
-            float fontPx = Mathf.Clamp(w / 120f, 10f, 25f);
-            int outline = Mathf.Max(1, Mathf.RoundToInt(fontPx / 12f));
+            // Scale pins so they read as discrete markers on the composite
+            // (which spans many tables' worth of world — much more than any
+            // single in-game zoom view shows). The 0.25 multiplier brings the
+            // composite pin size closer to what the player remembers from the
+            // live minimap; without it, pixel-proportional sizing makes pins
+            // look oversized at the composite's native resolution.
+            float pinScale = (referenceScreenWidth > 1f
+                ? (float)w / referenceScreenWidth
+                : (float)w / 1920f) * 0.25f;
+            // Caption font style comes straight from Valheim's pin name prefab
+            // so compile captions inherit the live-map FontStyles. The size
+            // anchors on the COPY cap (4096-wide composite ⇒ vanilla px) and
+            // ONLY scales UP from there — that keeps COPY/SEND labels at their
+            // familiar size while SAVE (which can reach 8192) grows the font
+            // proportionally so its bigger icons aren't dwarfing tiny labels.
+            // Mathf.Max(1f, …) clamps the multiplier at the COPY anchor so
+            // narrow worlds (where the composite is smaller than 4096) keep
+            // vanilla px instead of shrinking. Falls back to 16 px Normal if
+            // the prefab isn't reachable (shouldn't happen — Stamp only runs
+            // while the large map is open, but be defensive).
+            const float CopyAnchorWidth = 4096f;
+            SampleVanillaPinTmp(out float vanillaFontPx, out FontStyles pinFontStyle);
+            float pinFontPx = vanillaFontPx * Mathf.Max(1f, w / CopyAnchorWidth);
 
-            // Cull to on-canvas captions BEFORE touching the big buffer. A
-            // native (8192²) save converts to a ~268MB Color32[]; doing that
-            // unconditionally meant a session whose labels all fell outside the
-            // composed bounds paid the full allocation + per-pixel copy only to
-            // discard it. Resolve the draw list first; if nothing survives we
-            // return null without allocating anything.
-            var draws = new List<(string text, float px, float pyBottom)>();
-            foreach (var l in labels)
+            // Resolve pin draws (cull to on-canvas) BEFORE touching the big
+            // buffer. A native (8192²) save converts to a ~268MB Color32[];
+            // doing that unconditionally meant a session whose pins all fell
+            // outside the composed bounds paid the full allocation + per-pixel
+            // copy only to discard it. If nothing survives we return null
+            // without allocating anything.
+            var pinDraws = new List<(Sprite icon, Color32 tint,
+                                     float cx, float cyBottom,
+                                     float iconW, float iconH,
+                                     string name)>();
+            foreach (var p in pins)
             {
-                if (string.IsNullOrEmpty(l.Text)) continue;
-                float fx = (l.WorldX - worldMin.x) / worldSize.x;
-                float fyTop = (worldSize.y - (l.WorldZ - worldMin.y)) / worldSize.y;
+                if (p.Icon == null) continue;
+                float fx = (p.WorldX - worldMin.x) / worldSize.x;
+                float fyTop = (worldSize.y - (p.WorldZ - worldMin.y)) / worldSize.y;
+                // Composite bounding box cull (cheap reject for pins far
+                // outside any tile).
                 if (fx < 0f || fx > 1f || fyTop < 0f || fyTop > 1f) continue;
-                // Sit just below the table point (matches the in-game caption);
-                // convert to the bottom-up buffer's Y.
-                float pyTop = fyTop * h + fontPx * 0.9f;
-                draws.Add((l.Text, fx * w, h - pyTop));
-            }
-            if (draws.Count == 0) return null;
 
-            // Lazily filled the first time a label actually rasterizes — and
-            // only after the Valheim font resolves, so a missing font also
-            // skips the big allocation entirely.
-            Color32[] buf = null;
+                // Per-tile cull: the composite's rectangular bounding box can
+                // include large empty gaps between non-adjacent tiles (black
+                // regions in the final PNG). A pin sitting in a gap is at a
+                // world position the player never actually captured, so it
+                // shouldn't appear on the composite. Require the pin's world
+                // position to land inside at least one captured tile's world
+                // rect.
+                if (!IsInsideAnyTile(p.WorldX, p.WorldZ, tiles)) continue;
+
+                float iconW = Mathf.Max(4f, p.ScreenPxW * pinScale);
+                float iconH = Mathf.Max(4f, p.ScreenPxH * pinScale);
+                float cyBottom = h - fyTop * h;
+                pinDraws.Add((p.Icon, p.Tint, fx * w, cyBottom,
+                              iconW, iconH, TablePinName.Clean(p.Name)));
+            }
+
+            if (pinDraws.Count == 0) return null;
+
+            // Materialize the buffer up front (one-time cost; we know we have
+            // at least one on-canvas pin to draw). BGRA top-down → RGBA
+            // bottom-up so BlitText, BlitSpriteInto and EncodeRgbaBottomUp all
+            // agree on orientation.
+            Color32[] buf = MaterializeBuffer(bgraTopDown, w, h);
 
             // Hidden world-space canvas at the origin, 1 unit = 1 output pixel,
             // pivot at bottom-left so a child anchored at (px,py) sits exactly
             // at output pixel (px,py). Canvas disabled so it never renders;
             // everything below is synchronous (no yields) so no frame draws it.
-            var root = new GameObject("NMDA_CompileLabelStamp")
+            var root = new GameObject("NMDA_CompilePinStamp")
             {
                 hideFlags = HideFlags.HideAndDontSave
             };
             bool fontOk = true;
-            bool drewAny = false;
             try
             {
                 var canvas = root.AddComponent<Canvas>();
@@ -138,90 +211,30 @@ namespace NoMapDiscordAdditions.MapCompile
                 crt.position = Vector3.zero;
                 crt.rotation = Quaternion.identity;
 
-                foreach (var (text, px, pyBottom) in draws)
+                // ── Pass 1: pin icons (no font needed) ───────────────────────
+                // Survives the chroma-pick because compositing is already done;
+                // survives any tile-overlap inconsistency because we draw each
+                // pin once from the snapshot, not from whatever the per-tile
+                // capture happened to bake.
+                foreach (var pd in pinDraws)
                 {
-                    var go = new GameObject("lbl");
-                    // Inactive until the font is assigned so TMP's Awake
-                    // doesn't log the missing "LiberationSans SDF"
-                    // default-font warning. Activated below once the real
-                    // font is set, before the mesh is built/rasterized.
-                    go.SetActive(false);
-                    go.transform.SetParent(root.transform, false);
-                    var tmp = go.AddComponent<TextMeshProUGUI>();
+                    MapCaptureTexture.BlitSpriteInto(buf, w, h,
+                        pd.icon, pd.tint,
+                        pd.cx, pd.cyBottom, pd.iconW, pd.iconH);
+                }
 
-                    MapUI.ApplyValheimFont(tmp);
-                    if (tmp.font == null) { fontOk = false; break; }
-
-                    // Font resolved and we have an on-canvas caption — now it's
-                    // worth materializing the full-resolution buffer. BGRA
-                    // top-down → RGBA bottom-up (Unity Color32 / GetPixels32
-                    // order) so BlitText and EncodeRgbaBottomUp agree on
-                    // orientation.
-                    if (buf == null)
-                    {
-                        buf = new Color32[w * h];
-                        for (int row = 0; row < h; row++)
-                        {
-                            int dst = (h - 1 - row) * w;   // flip vertically
-                            int src = row * w * 4;
-                            for (int x = 0; x < w; x++)
-                            {
-                                int s = src + x * 4;
-                                buf[dst + x] = new Color32(
-                                    bgraTopDown[s + 2], bgraTopDown[s + 1],
-                                    bgraTopDown[s], 255);
-                            }
-                        }
-                    }
-
-                    tmp.text = text;
-                    tmp.fontSize = fontPx;
-                    tmp.alignment = TextAlignmentOptions.Center;
-                    tmp.textWrappingMode = TextWrappingModes.NoWrap;
-                    tmp.overflowMode = TextOverflowModes.Overflow;
-                    tmp.raycastTarget = false;
-
-                    var trt = tmp.rectTransform;
-                    trt.anchorMin = Vector2.zero;
-                    trt.anchorMax = Vector2.zero;
-                    trt.pivot = new Vector2(0.5f, 0.5f);
-                    trt.sizeDelta = new Vector2(
-                        Mathf.Max(64f, text.Length * fontPx), fontPx * 2f);
-
-                    // Font + layout set — safe to activate. The mesh build
-                    // (ForceMeshUpdate) and rasterization happen below.
-                    go.SetActive(true);
-
-                    // Outline: black face stamped around the centre, then the
-                    // white face on top — the Valheim outline material isn't in
-                    // the SDF atlas so BlitText can't sample it; this keeps the
-                    // caption readable over any biome (same idea as before, now
-                    // with the real serif glyphs).
-                    // One TMP mesh rebuild per colour, NOT one per offset. The
-                    // outline is the same glyphs in the same colour at 48
-                    // shifted positions; only the RectTransform moves between
-                    // blits and BlitText reads glyph positions live, so a
-                    // rebuild there is pure waste (it was ~49 rebuilds/label,
-                    // seconds of main-thread freeze on a big native save).
-                    // ForceMeshUpdate IS required after a colour change because
-                    // TMP bakes vertex colour into the mesh BlitText samples.
-                    tmp.color = new Color32(0, 0, 0, 220);
-                    tmp.ForceMeshUpdate();
-                    for (int oy = -outline; oy <= outline; oy++)
-                        for (int ox = -outline; ox <= outline; ox++)
-                        {
-                            if (ox == 0 && oy == 0) continue;
-                            trt.anchoredPosition = new Vector2(px + ox, pyBottom + oy);
-                            MapCaptureTexture.RasterizeTmpInto(buf, w, h, tmp,
-                                forceMeshUpdate: false);
-                        }
-
-                    tmp.color = Color.white;
-                    tmp.ForceMeshUpdate();
-                    trt.anchoredPosition = new Vector2(px, pyBottom);
-                    MapCaptureTexture.RasterizeTmpInto(buf, w, h, tmp,
-                        forceMeshUpdate: false);
-                    drewAny = true;
+                // ── Pass 2: pin captions (need TMP font) ─────────────────────
+                // Draws below each icon. Skipped silently when the Valheim font
+                // can't be resolved (DrawTmpCaption sets fontOk=false) — the
+                // icons still made it onto the composite.
+                foreach (var pd in pinDraws)
+                {
+                    if (!fontOk) break;
+                    if (string.IsNullOrEmpty(pd.name)) continue;
+                    float captionY = pd.cyBottom - pd.iconH * 0.5f - pinFontPx * 0.6f;
+                    DrawTmpCaption(root, buf, w, h,
+                        pd.name, pd.cx, captionY,
+                        pinFontPx, pinFontStyle, ref fontOk);
                 }
             }
             finally
@@ -230,10 +243,137 @@ namespace NoMapDiscordAdditions.MapCompile
                 MapCaptureTexture.ClearLabelAtlasCache();
             }
 
-            // Font missing, or nothing was on-canvas: discard the converted
-            // buffer and let the caller encode the raw BGRA (labels skipped).
-            if (!fontOk || !drewAny) return null;
             return buf;
+        }
+
+        // BGRA top-down → RGBA bottom-up, opaque alpha. Single allocation +
+        // copy; shared by the label and pin passes.
+        private static Color32[] MaterializeBuffer(byte[] bgraTopDown, int w, int h)
+        {
+            var buf = new Color32[w * h];
+            for (int row = 0; row < h; row++)
+            {
+                int dst = (h - 1 - row) * w;
+                int src = row * w * 4;
+                for (int x = 0; x < w; x++)
+                {
+                    int s = src + x * 4;
+                    buf[dst + x] = new Color32(
+                        bgraTopDown[s + 2], bgraTopDown[s + 1],
+                        bgraTopDown[s], 255);
+                }
+            }
+            return buf;
+        }
+
+        // Draw one caption with a black outline + white face into buf. Uses
+        // BlitText's single-pass SDF-band outline (drawOutline=true) — the
+        // same path the live send/copy walk uses — so a composite full of
+        // pins pays one rasterize per caption instead of N offset rasterizes.
+        // Returns true if the caption actually rasterized; sets fontOk=false
+        // (and returns false) when the Valheim font can't be resolved on the
+        // first attempt — caller is expected to short-circuit further text
+        // draws after that.
+        private static bool DrawTmpCaption(GameObject root, Color32[] buf, int w, int h,
+            string text, float px, float pyBottom, float fontPx, FontStyles fontStyle,
+            ref bool fontOk)
+        {
+            var go = new GameObject("lbl");
+            // Inactive until the font is assigned so TMP's Awake doesn't log
+            // the missing "LiberationSans SDF" default-font warning. Activated
+            // below once the real font is set, before the mesh is built.
+            go.SetActive(false);
+            go.transform.SetParent(root.transform, false);
+            var tmp = go.AddComponent<TextMeshProUGUI>();
+
+            MapUI.ApplyValheimFont(tmp);
+            if (tmp.font == null) { fontOk = false; return false; }
+
+            tmp.text = text;
+            tmp.fontSize = fontPx;
+            // Take the FontStyles enum from the vanilla pin-name prefab
+            // verbatim — assigning Normal here would override any italic /
+            // smallcaps / uppercase the prefab uses, so the compile caption
+            // would render in a different style than the live map.
+            tmp.fontStyle = fontStyle;
+            tmp.alignment = TextAlignmentOptions.Center;
+            tmp.textWrappingMode = TextWrappingModes.NoWrap;
+            tmp.overflowMode = TextOverflowModes.Overflow;
+            tmp.raycastTarget = false;
+            tmp.color = Color.white;
+
+            var trt = tmp.rectTransform;
+            trt.anchorMin = Vector2.zero;
+            trt.anchorMax = Vector2.zero;
+            trt.pivot = new Vector2(0.5f, 0.5f);
+            trt.sizeDelta = new Vector2(
+                Mathf.Max(64f, text.Length * fontPx), fontPx * 2f);
+            trt.anchoredPosition = new Vector2(px, pyBottom);
+
+            go.SetActive(true);
+            tmp.ForceMeshUpdate();
+            MapCaptureTexture.RasterizeTmpInto(buf, w, h, tmp,
+                forceMeshUpdate: false, drawOutline: true);
+
+            UnityEngine.Object.DestroyImmediate(go);
+            return true;
+        }
+
+        // True when (wx, wz) lands inside any captured tile's world rect.
+        // Used to cull pins that sit in the black gaps between non-adjacent
+        // tiles within the composite's bounding rect. If the tile list is
+        // null/empty, fall back to permissive behavior (keep all pins) — the
+        // outer bounding-rect cull already happened.
+        private static bool IsInsideAnyTile(float wx, float wz,
+            IReadOnlyList<MapCompileTile> tiles)
+        {
+            if (tiles == null || tiles.Count == 0) return true;
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var t = tiles[i];
+                if (wx >= t.WorldMin.x && wx <= t.WorldMax.x
+                    && wz >= t.WorldMin.y && wz <= t.WorldMax.y)
+                    return true;
+            }
+            return false;
+        }
+
+        // ── Vanilla pin caption attributes ───────────────────────────────────
+        // Looked up once per session from Minimap.m_pinNamePrefab so compile
+        // captions inherit the exact fontSize / FontStyles the live map uses.
+        // Cached after the first successful read because the prefab is a
+        // scene-stable asset for the lifetime of the Minimap; missing-prefab
+        // path falls back to 16 px Normal but doesn't cache so a future Stamp
+        // can retry once the prefab becomes reachable.
+        private static float _vanillaPinFontSize = -1f;
+        private static FontStyles _vanillaPinFontStyle;
+
+        private static void SampleVanillaPinTmp(out float fontSize, out FontStyles fontStyle)
+        {
+            if (_vanillaPinFontSize > 0f)
+            {
+                fontSize = _vanillaPinFontSize;
+                fontStyle = _vanillaPinFontStyle;
+                return;
+            }
+
+            var mini = Minimap.instance;
+            var prefab = mini != null ? mini.m_pinNamePrefab : null;
+            if (prefab != null)
+            {
+                var sample = prefab.GetComponentInChildren<TMP_Text>(true);
+                if (sample != null)
+                {
+                    _vanillaPinFontSize = sample.fontSize;
+                    _vanillaPinFontStyle = sample.fontStyle;
+                    fontSize = _vanillaPinFontSize;
+                    fontStyle = _vanillaPinFontStyle;
+                    return;
+                }
+            }
+
+            fontSize = 16f;
+            fontStyle = FontStyles.Normal;
         }
     }
 }

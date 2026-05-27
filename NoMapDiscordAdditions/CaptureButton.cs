@@ -127,6 +127,11 @@ namespace NoMapDiscordAdditions
             {
                 var plugin = Plugin.Instance;
                 if (plugin == null) return;
+                // Sample LEFT CTRL HERE (at the click frame) — by the time
+                // the capture coroutine actually runs Apply, several frames
+                // can have elapsed (WaitForEndOfFrame + MapStyleRender), so
+                // an inline Input.GetKey there is unreliable.
+                PinCaptureFilter.ArmFromCurrentInput();
                 plugin.TriggerDiscordSend();
             });
 
@@ -136,6 +141,7 @@ namespace NoMapDiscordAdditions
             {
                 var plugin = Plugin.Instance;
                 if (plugin == null) return;
+                PinCaptureFilter.ArmFromCurrentInput();
                 plugin.TriggerClipboardCopy();
             });
 
@@ -221,7 +227,7 @@ namespace NoMapDiscordAdditions
         }
 
         private static string BuildSendLabel() =>
-            $"SEND MAP ({Plugin.ScreenshotKey?.Value.ToString() ?? "F10"})";
+            $"SEND MAP ({Plugin.SendKey?.Value.ToString() ?? "F10"})";
 
         private static string BuildCopyLabel() =>
             $"COPY MAP ({Plugin.CopyKey?.Value.ToString() ?? "F11"})";
