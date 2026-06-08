@@ -32,12 +32,13 @@ The bottom-right of the large map gets a `Show Biome Text` toggle, a **SEND MAP*
 
 A second panel appears on the bottom-left of the large map. The intent: walk between cartography tables, add each reading as a tile, and on **COMPILE** the mod composites every tile into a single PNG that preserves world coordinates. The session is never lost when you save/copy/send — pause your mapping adventure and resume it at the next table or after a restart.
 
-| Idle — `START COMPILE` / `RESUME COMPILE (N)` | Compiling — `ADD TILE (N)` / `COMPILE (N)` / `SHARE (N)` / `CANCEL` / `CLEAR` |
+| Idle — `START COMPILE` / `RESUME COMPILE (N)` | Compiling — `ADD TILE (N)` / `REMOVE TILE` / `COMPILE (N)` / `SHARE (N)` / `CANCEL` / `CLEAR` |
 |---|---|
 | ![Compile panel — idle](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg) | ![Compile panel — adding tiles](https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/2.jpg) |
 
 - **ADD TILE** is enabled only when the map was opened at a cartography table (no `M`-key adds, no portable map items)
 - Re-adding within ~8m of an existing tile **replaces** that tile in place — re-shoot a table without ending up with duplicates
+- **REMOVE TILE** appears next to **ADD TILE** when you're standing at a table whose tile is already in the session — deletes just that one tile and its PNG, leaving the rest of the session untouched. Stays greyed out and labelled `REMOVE (L-CTRL)` until you hold **Left CTRL**, so a misclick next to `UPDATE TILE` can't silently wipe a hard-won tile
 - The session is saved to disk after every add, scoped to the current world + character. If you crash, disconnect, or just go on an adventure, click **RESUME COMPILE (N)** the next time you open the map
 - **CLEAR** wipes the whole session — every in-memory tile and the on-disk session folder — and drops you back to idle. It sits next to **CANCEL** but stays greyed out and labelled `CLEAR (L-CTRL)` until you hold **Left CTRL**, so this destructive reset can't be hit by accident. Also offered next to **RESUME COMPILE (N)** in idle to discard a saved session without resuming it
 - **COMPILE** opens the result panel:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+
+### Map Compile
+
+- Added a **`REMOVE TILE`** button to the compile panel — wipes the tile belonging to the cartography table you're currently standing at, deleting its PNG and updating the session index. Mirrors the dedup-by-table-position rule the existing `UPDATE TILE` uses, so it always acts on the same tile `UPDATE TILE` would replace. Lets you undo a tile capture without wiping the whole session via `CLEAR`
+- The button only appears when you're at a table whose tile is already in the session (it pairs with `UPDATE TILE`); placed next to it in the panel so the trio at the current table — `UPDATE TILE`, `REMOVE TILE`, `COMPILE` — read together. Greyed out and labelled `REMOVE (L-CTRL)` until you hold **Left CTRL**, so a misclick on `UPDATE TILE`'s neighbour can't silently wipe a hard-won tile
+
 ## 1.1.0
 
 ### Output format (new — applies to SAVE and SEND TO DISCORD)
