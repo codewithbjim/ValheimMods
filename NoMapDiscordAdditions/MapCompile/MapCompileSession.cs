@@ -269,6 +269,45 @@ namespace NoMapDiscordAdditions.MapCompile
         }
 
         /// <summary>
+        /// Remove the tile belonging to the current active table (if any). The
+        /// PNG is deleted from disk and the session index is rewritten before
+        /// this returns. Mirrors <see cref="AddTile"/>'s dedup-by-table-position
+        /// rule so the button next to UPDATE TILE acts on the same tile UPDATE
+        /// TILE would replace. Returns true if a tile was actually removed.
+        /// </summary>
+        public static bool RemoveActiveTableTile()
+        {
+            if (CurrentState != State.Compiling) return false;
+            if (ActiveTablePos == null) return false;
+
+            int idx = FindTileNearTable(ActiveTablePos.Value);
+            if (idx < 0) return false;
+
+            var tile = _tiles[idx];
+            try
+            {
+                if (!string.IsNullOrEmpty(tile.PngPath) && File.Exists(tile.PngPath))
+                    File.Delete(tile.PngPath);
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: a missing/locked PNG should not block index
+                // cleanup — the in-memory tile is the source of truth for the
+                // composite, and a stale file is harmless (Resume re-scans).
+                ModLog.Warn($"[NoMapDiscordAdditions] Tile PNG delete failed: {ex.Message}");
+            }
+
+            _tiles.RemoveAt(idx);
+            SaveIndex();
+            StateChanged?.Invoke();
+
+            string tileWord = _tiles.Count == 1 ? "tile" : "tiles";
+            Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                $"Tile removed ({_tiles.Count} {tileWord}).");
+            return true;
+        }
+
+        /// <summary>
         /// Move from Compiling to Reviewing. Tile data is preserved on disk and
         /// survives Save / Copy / Send / Done / Cancel — only the explicit
         /// DISCARD action in the result panel ever wipes it, so the session can
