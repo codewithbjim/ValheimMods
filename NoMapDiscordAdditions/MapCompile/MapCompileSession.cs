@@ -110,6 +110,8 @@ namespace NoMapDiscordAdditions.MapCompile
             MapCompileEnvironment.EnsureDirectory(_sessionDir);
 
             _tiles.Clear();
+            // Fresh session ⇒ every pin kind included until the player hides one.
+            MapCompilePinFilter.Reset();
             CurrentState = State.Compiling;
             SaveIndex();
             StateChanged?.Invoke();
@@ -355,6 +357,7 @@ namespace NoMapDiscordAdditions.MapCompile
         public static void Discard()
         {
             _tiles.Clear();
+            MapCompilePinFilter.Reset();
             try
             {
                 if (!string.IsNullOrEmpty(_sessionDir) && Directory.Exists(_sessionDir))
@@ -391,6 +394,7 @@ namespace NoMapDiscordAdditions.MapCompile
                 || (!string.IsNullOrEmpty(dir) && Directory.Exists(dir));
 
             _tiles.Clear();
+            MapCompilePinFilter.Reset();
             try
             {
                 if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
@@ -424,6 +428,19 @@ namespace NoMapDiscordAdditions.MapCompile
             StateChanged?.Invoke();
             Player.m_localPlayer?.Message(
                 MessageHud.MessageType.Center, "Compile session kept — resume any time.");
+        }
+
+        /// <summary>
+        /// Re-write the session index so the current PINS-panel selection
+        /// (<see cref="MapCompilePinFilter"/>) is saved to disk. Called when the
+        /// PINS panel closes. No-op unless a session is on disk (Compiling) — the
+        /// panel only opens then, but guard anyway.
+        /// </summary>
+        public static void PersistPinFilter()
+        {
+            if (CurrentState != State.Compiling) return;
+            if (string.IsNullOrEmpty(_sessionDir)) return;
+            SaveIndex();
         }
 
         // ─── Internal helpers ────────────────────────────────────────────────
@@ -464,6 +481,11 @@ namespace NoMapDiscordAdditions.MapCompile
             public int Version = 1;
             public string SessionKey;
             public List<TileDto> Tiles = new List<TileDto>();
+            // Sprite-keys the player hid in the PINS panel. NullValueHandling
+            // .Ignore keeps this out of the JSON when nothing is excluded, so
+            // sessions written by older builds (and ones with no filter) load
+            // unchanged. Restored into MapCompilePinFilter on LoadIndex.
+            public List<string> ExcludedPins;
         }
 
         private class TileDto
@@ -505,6 +527,12 @@ namespace NoMapDiscordAdditions.MapCompile
             string tmpFile = sessionFile + ".tmp";
 
             var dto = new SessionIndexDto { SessionKey = _sessionKey };
+            // Persist the PINS-panel selection alongside the tiles. Left null
+            // (omitted from JSON) when nothing is hidden, so the common case
+            // stays clean and older readers are unaffected.
+            var excluded = MapCompilePinFilter.ExcludedKeys;
+            if (excluded != null && excluded.Count > 0)
+                dto.ExcludedPins = new List<string>(excluded);
             foreach (var t in _tiles)
             {
                 dto.Tiles.Add(new TileDto
@@ -542,7 +570,14 @@ namespace NoMapDiscordAdditions.MapCompile
             string sessionFile = MapCompileEnvironment.GetSessionFile(_sessionDir);
             string text = File.ReadAllText(sessionFile, Encoding.UTF8);
             var dto = JsonConvert.DeserializeObject<SessionIndexDto>(text);
-            if (dto == null || dto.Tiles == null) return;
+            if (dto == null) return;
+
+            // Restore the PINS-panel selection (null/absent ⇒ everything
+            // included). Done before the tiles so the filter is ready by the
+            // time the panel can open on the resumed session.
+            MapCompilePinFilter.SetExcludedKeys(dto.ExcludedPins);
+
+            if (dto.Tiles == null) return;
 
             foreach (var d in dto.Tiles)
             {

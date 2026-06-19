@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.0
+
+### Map Compile — pick which pins land on the composite (new)
+
+- Added a **`PINS`** button to the compile panel (between the capture controls and `COMPILE`). It opens an **INCLUDE PINS** overlay — a wrapping grid of every distinct pin icon that actually falls inside your captured tiles, each a clickable thumbnail. Turn a kind off and the next `COMPILE` skips every pin drawing that icon; turn it back on to restore it. `ALL` / `NONE` toggle the whole set, `DONE` (or clicking the dimmed backdrop) closes
+  - Pins are grouped by the **sprite they actually draw with**, so vanilla kinds and mod-added pins (each mod ships its own sprite) get their own rows automatically — no hardcoded list to fall out of date
+  - The list only shows pins that land **inside a captured tile**, so it mirrors exactly what the composite would stamp; a pin in an un-mapped region never clutters it
+  - Default is everything-included — a kind is only hidden once you explicitly turn it off, so a pin type that first appears after you last opened the panel is included automatically
+  - The selection is **persisted with the compile session** (written into the session index) and restored on `RESUME COMPILE`, so it survives a logoff. It resets to all-included on `START` / `CLEAR ALL` / `DISCARD`. The `PINS` button label shows the hidden count (`PINS (3 off)`) so you can tell pins are held back without opening the panel
+- The **bed / spawn pin** is now kept off the composite entirely (and out of the `PINS` listing) — it marks your spawn, not a wayfinding feature. The always-on **`start`** temple landmark is unaffected: it still composites, just isn't offered as a `PINS` toggle (it's a landmark, not a choice)
+
+### Map Compile — panel button reorganization
+
+- Folded the old `CANCEL` + `CLEAR` buttons into a single **`EXIT`** button: a tap suspends the session (kept on disk, `RESUME` any time); hold **Left CTRL** and it morphs to a red **`CLEAR ALL (L-CTRL)`** that wipes the whole session. One button, the panel's consistent "L-CTRL = destructive variant" rule
+- Folded the standalone `REMOVE TILE` button into `UPDATE TILE`: at a table whose tile is already in the session, a tap re-captures (`UPDATE TILE`) and holding **Left CTRL** morphs it to a red **`REMOVE TILE`** that deletes just that tile. The destructive variant on every button now reads in red so the danger is obvious at a glance
+- The standalone `CLEAR` button now only appears in the idle / resume-review layouts (where there's no `EXIT` to fold it into)
+
+### Map Compile — pin rendering fixes
+
+- **Uniform pin sizing.** Compile pins are now sized from Valheim's stable size formula (`m_pinSizeLarge` × doubleSize) instead of each pin's live on-screen rect. The live rect only exists for pins inside the current viewport (Valheim destroys off-screen pin markers) and mods like ZenMap rescale on-screen ones by zoom — so two identical pins came out different sizes depending on which happened to be on-screen when `COMPILE` ran. The new path is position- and zoom-independent, so same-kind pins are uniform
+- **Correct pin size on single-tile compiles.** Pin icons and captions now scale relative to a single tile (= one live-map view) rather than the whole composite. The old constant `0.25×` icon multiplier + 4096-px font anchor baked in an implicit "~4 tiles across" assumption that shrank pins ~4× on a single-tile compile; pins/captions now render at their familiar live-map size for any tile count
+- **No more stretched pin icons.** Non-square pin sprites (e.g. the trader pouch) are now letterboxed to their native aspect ratio instead of being stretched to fill the square marker box — matching Valheim's `Image.preserveAspect`
+- **Off-screen pins keep their ZenMap color.** Pins on already-captured-but-off-screen tiles have no live UI element, so their color used to fall back to white — erasing ZenMap's boss-orange / private-peach tinting across most of the composite. The compositor now asks ZenMap's own `AdjustPinColor` for the hue it would have assigned, falling back to the vanilla white / shared-grey default only when ZenMap is absent or its pin coloring is off
+
+### Capture — color-correct pin compositing (SEND / COPY and compile)
+
+- Pin icons are now composited in **linear color space** on Linear-color-space projects (which Valheim is), matching how the GPU blends the live map. The CPU blit previously alpha-blended directly on sRGB bytes, which over-brightened **translucent** pins (shared / other-player pins are drawn at ~80% alpha) — the "washed-out pin" look against the live map. Opaque pins were already correct; this fixes the translucent ones. Gamma-space projects keep the original byte math (the GPU blends in gamma there too)
+
+### Compatibility
+
+- Bumped the **ZenMap** dependency floor to `1.8.0`
+
 ## 1.1.1
 
 ### Map Compile

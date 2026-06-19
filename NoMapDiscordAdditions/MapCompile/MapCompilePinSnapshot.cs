@@ -101,6 +101,18 @@ namespace NoMapDiscordAdditions.MapCompile
                 // reference, not a history of mishaps.
                 if (pin.m_type == Minimap.PinType.Death) continue;
 
+                // Skip the bed/spawn pin (PinType.Bed, Minimap.m_spawnPointPin —
+                // Minimap.cs:1109). It's always shown on the live map but marks
+                // the player's spawn, not a wayfinding feature, so it's kept off
+                // the composite. Matched by reference too in case a mod (e.g.
+                // ZenMap) retypes it away from Bed.
+                // NOTE: this is the bed pin, NOT the "start" StartTemple location
+                // marker — that one stays on the composite (hidden only from the
+                // PINS listing; see MapCompilePinFilter.TryGetDrawSprite).
+                if (pin.m_type == Minimap.PinType.Bed
+                    || (minimap.m_spawnPointPin != null && pin == minimap.m_spawnPointPin))
+                    continue;
+
                 // Icon-type filter the player toggled in the UI.
                 int typeIdx = (int)pin.m_type;
                 if (visibleTypes != null
@@ -120,42 +132,68 @@ namespace NoMapDiscordAdditions.MapCompile
                 // what the player actually sees on the live map (e.g. white
                 // outline head). Fall back to pin.m_icon when there's no
                 // live element, then to GetSprite(type) as a last resort.
-                Sprite sprite = null;
-                if (pin.m_iconElement != null && pin.m_iconElement.sprite != null)
-                    sprite = pin.m_iconElement.sprite;
-                if (sprite == null) sprite = pin.m_icon;
-                if (sprite == null) sprite = minimap.GetSprite(pin.m_type);
+                Sprite sprite = MapCompilePinFilter.ResolveSprite(pin, minimap);
                 if (sprite == null) continue;
 
-                // Size: prefer the live UI element's actual rect (so animated /
-                // doubleSize / m_worldSize pins keep their custom dimensions),
-                // and fall back to m_pinSizeLarge × (doubleSize ? 2 : 1) when
-                // there's no live element — that's what Valheim would have set
-                // it to per UpdatePins.
-                float pxW, pxH;
-                var ui = pin.m_uiElement;
-                if (ui != null && ui.gameObject.activeInHierarchy)
-                {
-                    Vector2 sz = ui.rect.size;
-                    pxW = sz.x > 0f ? sz.x : baseSize;
-                    pxH = sz.y > 0f ? sz.y : baseSize;
-                }
-                else
-                {
-                    float size = pin.m_doubleSize ? baseSize * 2f : baseSize;
-                    pxW = pxH = size;
-                }
+                // Per-pin-kind include filter the player set in the PINS panel.
+                // Grouped by the SAME sprite key the panel lists, so turning a
+                // row off here drops every pin drawing that icon from the
+                // composite — vanilla or mod-added alike. No-op (everything
+                // included) until the player explicitly hides a kind.
+                if (MapCompilePinFilter.IsExcluded(
+                        MapCompilePinFilter.KeyFor(sprite, pin.m_type)))
+                    continue;
+
+                // Size from the STABLE vanilla formula — m_pinSizeLarge ×
+                // (doubleSize ? 2 : 1) — for EVERY pin, NOT the live
+                // ui.rect.size. The live rect is unreliable for a uniform
+                // composite: only pins inside the current viewport have a live
+                // m_uiElement (Valheim destroys the rest off-screen via
+                // DestroyPinMarker), and mods like ZenMap rescale the on-screen
+                // ones by the current zoom. Reading the rect therefore sized two
+                // identical pins differently depending on which happened to be
+                // on-screen when COMPILE ran (the reported "same pin, different
+                // size" bug). This formula is the exact size vanilla sets per
+                // UpdatePins (Minimap.cs:1371) and is position- and
+                // zoom-independent, so same-type pins come out uniform. The
+                // m_animate per-frame wobble is intentionally not baked for the
+                // same reason.
+                float size = pin.m_doubleSize ? baseSize * 2f : baseSize;
+                float pxW = size, pxH = size;
 
                 // Prefer the live Image.color over our heuristic — same
                 // reason as the sprite swap above. Mods can recolour pin
                 // icons (e.g. a "boss tracker" tinting boss pins differently
                 // than vanilla) and we want the composite to mirror what the
                 // player sees, not the unmodified white / shared-grey default.
+                //
+                // The catch: only pins currently on-screen have a live
+                // m_iconElement. Valheim's UpdatePins destroys the UI marker
+                // for every off-screen pin (DestroyPinMarker), and the
+                // composite spans many tables — so the bulk of pins are
+                // off-screen and m_iconElement reads null (Unity destroyed-
+                // object equality). Those used to all fall back to white,
+                // erasing ZenMap's boss-orange / private-peach coloring.
+                //
+                // Fix: when there's no live element, ask ZenMap's own
+                // AdjustPinColor for the hue it would have assigned (it reads
+                // the same PinColor config the live map uses), and only fall
+                // back to the white / shared-grey vanilla default when ZenMap
+                // is absent or its pin coloring is disabled.
                 Color32 tint;
                 if (pin.m_iconElement != null)
+                {
                     tint = pin.m_iconElement.color;
+                }
                 else
-                    tint = pin.m_ownerID != 0L ? sharedTint : (Color32)Color.white;
+                {
+                    Color def = pin.m_ownerID != 0L
+                        ? (Color)sharedTint
+                        : Color.white;
+                    tint = ZenMapInterop.TryGetPinColor(pin, def, out var zc)
+                        ? (Color32)zc
+                        : (Color32)def;
+                }
 
                 // Valheim stores location/boss pin names as localization
                 // tokens (e.g. "$enemy_gdking"). The live map UI runs them

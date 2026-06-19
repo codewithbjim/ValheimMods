@@ -123,29 +123,36 @@ namespace NoMapDiscordAdditions.MapCompile
             if (worldSize.x <= 0f || worldSize.y <= 0f) return null;
             if (pins == null || pins.Count == 0) return null;
 
-            // Scale pins so they read as discrete markers on the composite
-            // (which spans many tables' worth of world — much more than any
-            // single in-game zoom view shows). The 0.25 multiplier brings the
-            // composite pin size closer to what the player remembers from the
-            // live minimap; without it, pixel-proportional sizing makes pins
-            // look oversized at the composite's native resolution.
-            float pinScale = (referenceScreenWidth > 1f
-                ? (float)w / referenceScreenWidth
-                : (float)w / 1920f) * 0.25f;
+            // Size pins + captions so they read at the size they had on the
+            // live large map. Each captured tile IS one live-map view, so a pin
+            // that occupied a given fraction of the screen should occupy that
+            // same fraction of ONE tile on the composite — independent of how
+            // many tiles the composite spans. The scale factor is therefore
+            //   (tile_px_on_composite / referenceScreenWidth)
+            // where tile_px_on_composite = (tileWorldWidth / compositeWorldWidth) * w.
+            //
+            // This replaces an older constant 0.25 icon multiplier + 4096-px
+            // font anchor, which baked in an implicit "~4 tiles across"
+            // assumption: it looked right for a typical multi-tile composite
+            // but shrank pins ~4x (and left captions at raw vanilla px) on a
+            // single-tile compile. For a single tile the world ratio is 1, so
+            // the factor collapses to w/referenceScreenWidth — full on-screen
+            // size. For an N-across composite it scales down ~1/N, matching the
+            // old behaviour at N≈4 while staying correct for any tile count.
+            float refW = referenceScreenWidth > 1f ? referenceScreenWidth : 1920f;
+            float tileWorldW = AverageTileWorldWidth(tiles, worldSize.x);
+            float scaleFactor = (tileWorldW / worldSize.x) * ((float)w / refW);
+            if (scaleFactor <= 0f) scaleFactor = ((float)w / refW) * 0.25f; // defensive
+            float pinScale = scaleFactor;
+
             // Caption font style comes straight from Valheim's pin name prefab
             // so compile captions inherit the live-map FontStyles. The size
-            // anchors on the COPY cap (4096-wide composite ⇒ vanilla px) and
-            // ONLY scales UP from there — that keeps COPY/SEND labels at their
-            // familiar size while SAVE (which can reach 8192) grows the font
-            // proportionally so its bigger icons aren't dwarfing tiny labels.
-            // Mathf.Max(1f, …) clamps the multiplier at the COPY anchor so
-            // narrow worlds (where the composite is smaller than 4096) keep
-            // vanilla px instead of shrinking. Falls back to 16 px Normal if
-            // the prefab isn't reachable (shouldn't happen — Stamp only runs
-            // while the large map is open, but be defensive).
-            const float CopyAnchorWidth = 4096f;
+            // uses the same world-aware scale factor as the icons, so captions
+            // grow/shrink in lockstep with their markers. Falls back to 16 px
+            // Normal if the prefab isn't reachable (shouldn't happen — Stamp
+            // only runs while the large map is open, but be defensive).
             SampleVanillaPinTmp(out float vanillaFontPx, out FontStyles pinFontStyle);
-            float pinFontPx = vanillaFontPx * Mathf.Max(1f, w / CopyAnchorWidth);
+            float pinFontPx = vanillaFontPx * scaleFactor;
 
             // Resolve pin draws (cull to on-canvas) BEFORE touching the big
             // buffer. A native (8192²) save converts to a ~268MB Color32[];
@@ -177,6 +184,14 @@ namespace NoMapDiscordAdditions.MapCompile
 
                 float iconW = Mathf.Max(4f, p.ScreenPxW * pinScale);
                 float iconH = Mathf.Max(4f, p.ScreenPxH * pinScale);
+                // The pin marker rect is square, but a pin's sprite need not
+                // be (the trader pouch is taller than wide). BlitSpriteInto
+                // stretches the source rect to fill the destination box, so a
+                // non-square sprite drawn into a square box comes out
+                // distorted. Valheim's pin Image keeps the sprite's aspect, so
+                // letterbox the icon inside the square box to match the
+                // in-game look. Square sprites (the common case) are untouched.
+                FitSpriteAspect(p.Icon, ref iconW, ref iconH);
                 float cyBottom = h - fyTop * h;
                 pinDraws.Add((p.Icon, p.Tint, fx * w, cyBottom,
                               iconW, iconH, TablePinName.Clean(p.Name)));
@@ -317,6 +332,44 @@ namespace NoMapDiscordAdditions.MapCompile
 
             UnityEngine.Object.DestroyImmediate(go);
             return true;
+        }
+
+        // Shrink one axis of the (square) pin box so the sprite is drawn at
+        // its native aspect ratio instead of being stretched to fill the box —
+        // matching Unity's Image.preserveAspect, which Valheim's pin markers
+        // use. Sizes come from the sprite's textureRect (the actual sampled
+        // region). No-op for square sprites or a missing/degenerate rect.
+        private static void FitSpriteAspect(Sprite icon, ref float boxW, ref float boxH)
+        {
+            if (icon == null) return;
+            Rect r = icon.textureRect;
+            if (r.width <= 0f || r.height <= 0f) return;
+            float spriteAspect = r.width / r.height;
+            float boxAspect = boxW / boxH;
+            if (spriteAspect > boxAspect)
+                boxH = boxW / spriteAspect;   // sprite is wider — pillar-box vertically
+            else
+                boxW = boxH * spriteAspect;   // sprite is taller — letter-box horizontally
+        }
+
+        // Mean world-X width of the captured tiles, used to size pins relative
+        // to a single tile (= one live-map view) rather than the whole
+        // composite. All local captures share the same large-map zoom so the
+        // widths are near-identical; averaging just keeps an odd imported tile
+        // from skewing the result. Falls back to the full composite width when
+        // the tile list is empty (treated as one implicit tile ⇒ factor 1).
+        private static float AverageTileWorldWidth(
+            IReadOnlyList<MapCompileTile> tiles, float compositeWorldW)
+        {
+            if (tiles == null || tiles.Count == 0) return compositeWorldW;
+            float sum = 0f;
+            int n = 0;
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                float tw = tiles[i].WorldSize.x;
+                if (tw > 0f) { sum += tw; n++; }
+            }
+            return n > 0 ? sum / n : compositeWorldW;
         }
 
         // True when (wx, wz) lands inside any captured tile's world rect.

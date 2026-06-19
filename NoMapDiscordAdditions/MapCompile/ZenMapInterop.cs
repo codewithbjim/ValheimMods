@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using UnityEngine;
 
 namespace NoMapDiscordAdditions.MapCompile
 {
@@ -34,6 +35,13 @@ namespace NoMapDiscordAdditions.MapCompile
         private static PropertyInfo _inUseProp;   // static bool MapLocation.InUse
         private static PropertyInfo _activeProp;   // static MapLocation MapLocation.Active
         private static FieldInfo _percentField;   // float MapLocation.Percent (readonly)
+
+        // static Color AdjustPinColor(Minimap.PinData pin, Color defaultColor) —
+        // ZenMap's UpdatePins-transpiler hook that decides each pin's icon
+        // color (boss orange, private peach, shared, death, special, …) from
+        // its PinColor config. See ZenMap.cs:1390.
+        private static bool _colorResolved;
+        private static MethodInfo _adjustPinColor;
 
         private static void Resolve()
         {
@@ -100,6 +108,85 @@ namespace NoMapDiscordAdditions.MapCompile
             catch (Exception ex)
             {
                 ModLog.Warn($"[NoMapDiscordAdditions] ZenMap reveal-percent read failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Locate ZenMap's private static AdjustPinColor(PinData, Color) once.
+        // It lives on an internal patch class we can't name directly, so we
+        // scan ZenMap's assembly for a static method with the exact
+        // (PinData, Color) → Color signature. Reuses the MapLocation type found
+        // by Resolve() purely to get a handle on ZenMap's assembly.
+        private static void ResolveColor()
+        {
+            if (_colorResolved) return;
+            _colorResolved = true;
+            try
+            {
+                Type anchor = AppDomain.CurrentDomain.GetAssemblies()
+                    .Select(a =>
+                    {
+                        try { return a.GetType("ZenMap.MapLocation", false); }
+                        catch { return null; }
+                    })
+                    .FirstOrDefault(x => x != null);
+
+                if (anchor == null) return; // ZenMap not loaded — caller falls back.
+
+                foreach (Type t in anchor.Assembly.GetTypes())
+                {
+                    MethodInfo m;
+                    try
+                    {
+                        m = t.GetMethod("AdjustPinColor",
+                            BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
+                    }
+                    catch { continue; }
+                    if (m == null || m.ReturnType != typeof(Color)) continue;
+                    var ps = m.GetParameters();
+                    if (ps.Length == 2 && ps[1].ParameterType == typeof(Color))
+                    {
+                        _adjustPinColor = m;
+                        return;
+                    }
+                }
+
+                ModLog.Warn("[NoMapDiscordAdditions] ZenMap AdjustPinColor not found; " +
+                            "off-screen pins won't inherit ZenMap pin colors.");
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] ZenMap pin-color probe failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Compute the icon color ZenMap would assign to <paramref name="pin"/>,
+        /// independent of whether the pin currently has a live UI element. Used
+        /// to color pins that sit on already-captured-but-off-screen tiles in
+        /// the compile composite: their on-screen <c>m_iconElement</c> has been
+        /// destroyed, so reading its color yields white. This asks ZenMap's own
+        /// <c>AdjustPinColor</c> for the right hue instead (boss orange, private
+        /// peach, …). Returns false — leaving <paramref name="color"/> at
+        /// <paramref name="defaultColor"/> — when ZenMap is absent, its pin
+        /// coloring is disabled (it returns the default), or reflection failed.
+        /// </summary>
+        public static bool TryGetPinColor(Minimap.PinData pin, Color defaultColor, out Color color)
+        {
+            color = defaultColor;
+            if (pin == null) return false;
+            ResolveColor();
+            if (_adjustPinColor == null) return false;
+
+            try
+            {
+                color = (Color)_adjustPinColor.Invoke(null, new object[] { pin, defaultColor });
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] ZenMap pin-color read failed: {ex.Message}");
+                color = defaultColor;
                 return false;
             }
         }

@@ -29,6 +29,79 @@ namespace NoMapDiscordAdditions
         private static readonly Dictionary<Texture2D, Color32[]> _atlasCache =
             new Dictionary<Texture2D, Color32[]>();
 
+        // ── Color-space-correct pin compositing ─────────────────────────────
+        // Valheim draws the map UI on the GPU. In a Linear color-space project
+        // (which Valheim uses) the GPU samples each sprite sRGB→linear, applies
+        // the Image.color tint + alpha-blends over the map in LINEAR space, then
+        // the framebuffer re-encodes to sRGB on output. Our CPU blit instead
+        // multiplied + over-blended directly on the stored sRGB bytes. For an
+        // OPAQUE pin that's invisible (the source byte survives the round trip),
+        // but shared / other-player pins are drawn translucent
+        // (Color(0.7,0.7,0.7, 0.8*fade) — Minimap.UpdatePins), so the whole icon
+        // gets alpha-blended. A gamma-space blend of a light pin over terrain
+        // over-brightens it — the "washed-out" look reported against the live
+        // map. Match the GPU by compositing in linear space when the active
+        // color space is Linear; on a Gamma project the GPU blends in gamma too,
+        // so we keep the original byte math (a linear round trip would only add
+        // rounding error there).
+        private static readonly bool s_linearColor =
+            QualitySettings.activeColorSpace == ColorSpace.Linear;
+        private static readonly float[] s_srgbToLinear = BuildSrgbToLinear();
+
+        private static float[] BuildSrgbToLinear()
+        {
+            var t = new float[256];
+            for (int i = 0; i < 256; i++)
+                t[i] = Mathf.GammaToLinearSpace(i / 255f);
+            return t;
+        }
+
+        private static byte LinearToSrgbByte(float linear)
+        {
+            int b = Mathf.RoundToInt(Mathf.LinearToGammaSpace(linear) * 255f);
+            return (byte)(b < 0 ? 0 : (b > 255 ? 255 : b));
+        }
+
+        // Composite one tinted sprite texel (sp × tint) over the destination
+        // pixel, returning the new opaque pixel. Honors the active color space:
+        // a linear blend on Linear projects (matches the GPU), the original
+        // byte/gamma blend otherwise. Shared by the live-capture sprite blit
+        // (BlitImage) and the compile pin stamp (BlitSpriteInto) so both render
+        // pins identically to the on-screen map.
+        private static Color32 CompositePinTexel(Color32 sp, Color32 tint, Color32 dst)
+        {
+            int sa = (sp.a * tint.a) / 255;
+            if (sa == 0) return dst;
+
+            if (s_linearColor)
+            {
+                float a = sa / 255f;
+                float ia = 1f - a;
+                // Tint multiply in linear (Unity converts the UI vertex color
+                // gamma→linear before the shader multiply), then over-blend.
+                float r = s_srgbToLinear[sp.r] * s_srgbToLinear[tint.r] * a
+                          + s_srgbToLinear[dst.r] * ia;
+                float g = s_srgbToLinear[sp.g] * s_srgbToLinear[tint.g] * a
+                          + s_srgbToLinear[dst.g] * ia;
+                float b = s_srgbToLinear[sp.b] * s_srgbToLinear[tint.b] * a
+                          + s_srgbToLinear[dst.b] * ia;
+                return new Color32(
+                    LinearToSrgbByte(r), LinearToSrgbByte(g), LinearToSrgbByte(b), 255);
+            }
+
+            int sr = (sp.r * tint.r) / 255;
+            int sg = (sp.g * tint.g) / 255;
+            int sb = (sp.b * tint.b) / 255;
+            if (sa >= 250)
+                return new Color32((byte)sr, (byte)sg, (byte)sb, 255);
+            int iab = 255 - sa;
+            return new Color32(
+                (byte)((sr * sa + dst.r * iab) / 255),
+                (byte)((sg * sa + dst.g * iab) / 255),
+                (byte)((sb * sa + dst.b * iab) / 255),
+                255);
+        }
+
         // ── uv-clamp remap (the compile "squished icons" fix) ───────────────
         // The map terrain is rendered from the uvRect *clamped* to [0,1]
         // (DrawMapBase) and the world rect is derived the same way
@@ -501,30 +574,11 @@ namespace NoMapDiscordAdditions
 
                     int sx = Mathf.Clamp((int)(dx * invOutW), 0, srcW - 1);
                     Color32 sp = atlasPixels[srcRowOffset + sx];
+                    if (sp.a == 0) continue;
 
-                    // Apply Image.color tint.
-                    int sa = (sp.a * tint.a) / 255;
-                    if (sa == 0) continue;
-
-                    int sr = (sp.r * tint.r) / 255;
-                    int sg = (sp.g * tint.g) / 255;
-                    int sb = (sp.b * tint.b) / 255;
-
+                    // Apply Image.color tint + over-blend (color-space aware).
                     int di = dstRowOffset + px;
-                    if (sa >= 250)
-                    {
-                        output[di] = new Color32((byte)sr, (byte)sg, (byte)sb, 255);
-                    }
-                    else
-                    {
-                        Color32 dst = output[di];
-                        int ia = 255 - sa;
-                        output[di] = new Color32(
-                            (byte)((sr * sa + dst.r * ia) / 255),
-                            (byte)((sg * sa + dst.g * ia) / 255),
-                            (byte)((sb * sa + dst.b * ia) / 255),
-                            255);
-                    }
+                    output[di] = CompositePinTexel(sp, tint, output[di]);
                 }
             }
         }
@@ -789,29 +843,10 @@ namespace NoMapDiscordAdditions
 
                     int sx = Mathf.Clamp((int)(dx * invOutW), 0, srcW - 1);
                     Color32 sp = atlasPixels[srcRowOffset + sx];
-
-                    int sa = (sp.a * tint.a) / 255;
-                    if (sa == 0) continue;
-
-                    int sr = (sp.r * tint.r) / 255;
-                    int sg = (sp.g * tint.g) / 255;
-                    int sb = (sp.b * tint.b) / 255;
+                    if (sp.a == 0) continue;
 
                     int di = dstRowOffset + px;
-                    if (sa >= 250)
-                    {
-                        buf[di] = new Color32((byte)sr, (byte)sg, (byte)sb, 255);
-                    }
-                    else
-                    {
-                        Color32 dst = buf[di];
-                        int ia = 255 - sa;
-                        buf[di] = new Color32(
-                            (byte)((sr * sa + dst.r * ia) / 255),
-                            (byte)((sg * sa + dst.g * ia) / 255),
-                            (byte)((sb * sa + dst.b * ia) / 255),
-                            255);
-                    }
+                    buf[di] = CompositePinTexel(sp, tint, buf[di]);
                 }
             }
         }

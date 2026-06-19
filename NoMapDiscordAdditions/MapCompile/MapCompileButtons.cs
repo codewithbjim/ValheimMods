@@ -21,13 +21,12 @@ namespace NoMapDiscordAdditions.MapCompile
         private const float BtnHeight = 38f;
         private const float StartBtnWidth = 220f;
         private const float ActionBtnWidth = 160f;
-        // Wide enough for the disabled "CLEAR (R-CTRL)" hint label so the
+        // Wide enough for the disabled "CLEAR (L-CTRL)" hint label so the
         // button doesn't resize when the modifier is pressed/released.
         private const float ClearBtnWidth = 150f;
-        // Matches ActionBtnWidth so REMOVE TILE sits visually flush with ADD/
-        // UPDATE TILE next to it. The disabled hint shortens to "REMOVE
-        // (L-CTRL)" to fit; the held-state label is the explicit "REMOVE TILE".
-        private const float RemoveBtnWidth = 160f;
+        // EXIT widens to host "CLEAR ALL (L-CTRL)" when L-CTRL is held, so size
+        // it for the longer label up front to avoid a resize on press/release.
+        private const float ExitBtnWidth = 185f;
         private const float HlgPadVertical = 6f;
         private const float HlgSpacing = 8f;
 
@@ -35,15 +34,13 @@ namespace NoMapDiscordAdditions.MapCompile
         private static Button _btn1, _btn2, _btn3, _btn4, _btn5;
         private static TextMeshProUGUI _btn1Text, _btn2Text, _btn3Text, _btn4Text, _btn5Text;
 
-        // Contextual button: shown only in Compiling state when standing at a
-        // table whose tile is already in the session, so the player can undo
-        // a tile capture by returning to its table. Placed in the transform
-        // hierarchy right after _btn1 (ADD/UPDATE TILE) so the layout group
-        // renders it adjacent to the action it pairs with. Gated by L-CTRL via
-        // the same per-frame driver as CLEAR — without the gate a misclick on
-        // UPDATE TILE's neighbor would silently wipe a tile.
-        private static Button _btnRemove;
-        private static TextMeshProUGUI _btnRemoveText;
+        // PINS: opens the per-pin-kind include filter (MapCompilePinFilterPanel).
+        // Shown only while Compiling — it acts on what the next COMPILE stamps.
+        // Sits between the capture controls and COMPILE so the row reads
+        // "capture tiles → choose pins → compile".
+        private static Button _btnPins;
+        private static TextMeshProUGUI _btnPinsText;
+        private const float PinsBtnWidth = 150f;
 
         private static bool _composeInProgress;
         // Styled tile captures run a Map Style pipeline off-thread (~hundreds
@@ -54,9 +51,16 @@ namespace NoMapDiscordAdditions.MapCompile
         // until the in-flight capture finishes.
         private static bool _captureInProgress;
 
-        // Last sampled R-CTRL state for the CLEAR gate. Tracked so the
-        // per-frame driver only touches Unity objects when it actually flips.
+        // Last sampled L-CTRL state for the destructive-variant gate. Tracked so
+        // the per-frame driver only touches Unity objects when it actually flips.
+        // Drives the "L-CTRL = destructive variant" rule: UPDATE TILE → REMOVE
+        // TILE, EXIT → CLEAR ALL, and the idle-state CLEAR button.
         private static bool _clearGateHeld;
+
+        // Red tint applied to a button's label while it's showing its
+        // destructive L-CTRL variant (REMOVE TILE / CLEAR ALL), so the danger
+        // reads at a glance versus the normal orange label.
+        private static readonly Color DangerColor = new Color(1f, 0.42f, 0.36f, 1f);
 
         // Auto-import the incoming share folder at most once per map-open so a
         // session stays predictable; closing/reopening the large map pulls in
@@ -99,11 +103,9 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _btn1 = MapUI.CreateButton("CompileBtn1", _containerObj.transform,
                 StartBtnWidth, BtnHeight, "", out _btn1Text);
-            // Sibling index after _btn1 so the HorizontalLayoutGroup renders
-            // REMOVE TILE adjacent to ADD/UPDATE TILE (its contextual sibling)
-            // rather than at the end of the row.
-            _btnRemove = MapUI.CreateButton("CompileBtnRemove", _containerObj.transform,
-                RemoveBtnWidth, BtnHeight, "", out _btnRemoveText);
+            // After ADD/UPDATE TILE, before COMPILE — see _btnPins field comment.
+            _btnPins = MapUI.CreateButton("CompileBtnPins", _containerObj.transform,
+                PinsBtnWidth, BtnHeight, "", out _btnPinsText);
             _btn2 = MapUI.CreateButton("CompileBtn2", _containerObj.transform,
                 ActionBtnWidth, BtnHeight, "", out _btn2Text);
             _btn3 = MapUI.CreateButton("CompileBtn3", _containerObj.transform,
@@ -136,6 +138,13 @@ namespace NoMapDiscordAdditions.MapCompile
             {
                 TryAutoImport();
                 RefreshLayout();
+            }
+            else if (MapCompilePinFilterPanel.IsVisible)
+            {
+                // Don't strand the PINS overlay on screen when the panel hides
+                // (map closed / compile mode unavailable). Selections are kept
+                // in MapCompilePinFilter regardless.
+                MapCompilePinFilterPanel.Hide();
             }
             if (!visible) _autoImportedThisOpen = false;
         }
@@ -191,7 +200,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn3.onClick.RemoveAllListeners();
             _btn4.onClick.RemoveAllListeners();
             _btn5.onClick.RemoveAllListeners();
-            _btnRemove.onClick.RemoveAllListeners();
+            _btnPins.onClick.RemoveAllListeners();
 
             switch (MapCompileSession.CurrentState)
             {
@@ -230,7 +239,7 @@ namespace NoMapDiscordAdditions.MapCompile
             float w = 16f; // l/r padding
             int active = 0;
             if (_btn1.gameObject.activeSelf) { w += _btn1.GetComponent<RectTransform>().sizeDelta.x; active++; }
-            if (_btnRemove.gameObject.activeSelf) { w += _btnRemove.GetComponent<RectTransform>().sizeDelta.x; active++; }
+            if (_btnPins.gameObject.activeSelf) { w += _btnPins.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn2.gameObject.activeSelf) { w += _btn2.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn3.gameObject.activeSelf) { w += _btn3.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn4.gameObject.activeSelf) { w += _btn4.GetComponent<RectTransform>().sizeDelta.x; active++; }
@@ -255,6 +264,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _btn1.gameObject.SetActive(true);
             _btn1Text.text = $"RESUME COMPILE ({n})";
+            _btn1Text.color = MapUI.LabelColor; // clear any leftover REMOVE-state tint
             _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(StartBtnWidth, BtnHeight);
             _btn1.interactable = !_composeInProgress;
             _btn1.onClick.AddListener(() =>
@@ -266,7 +276,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn2.gameObject.SetActive(false);
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
-            _btnRemove.gameObject.SetActive(false);
+            _btnPins.gameObject.SetActive(false);
             ShowClearButton(true);
         }
 
@@ -279,6 +289,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn1Text.text = resumable
                 ? $"RESUME COMPILE ({existingCount})"
                 : "START COMPILE";
+            _btn1Text.color = MapUI.LabelColor; // clear any leftover REMOVE-state tint
             _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(StartBtnWidth, BtnHeight);
             _btn1.interactable = !_composeInProgress;
             _btn1.onClick.AddListener(() =>
@@ -301,7 +312,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn2.gameObject.SetActive(false);
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
-            _btnRemove.gameObject.SetActive(false);
+            _btnPins.gameObject.SetActive(false);
             // Only worth offering when there's a saved session on disk to wipe.
             ShowClearButton(resumable);
         }
@@ -322,6 +333,9 @@ namespace NoMapDiscordAdditions.MapCompile
                         ? $"UPDATE TILE ({n})"
                         : $"ADD TILE ({n})")
                     : "ADD TILE — go to a table";
+            // Reset to the normal label color; ApplyDestructiveGate re-tints it
+            // red below only when L-CTRL morphs it to REMOVE TILE.
+            _btn1Text.color = MapUI.LabelColor;
             // The progress label is longer than the normal ADD TILE label, so
             // widen the button when it's showing (mirrors the "go to a table"
             // case below).
@@ -330,7 +344,10 @@ namespace NoMapDiscordAdditions.MapCompile
                 : ActionBtnWidth;
             _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(btn1W, BtnHeight);
             _btn1.interactable = MapCompileSession.CanAddTile && !busy;
-            _btn1.onClick.AddListener(OnAddTileClicked);
+            // Tap captures; L-CTRL at an already-added table removes that tile
+            // instead (see OnTileButtonClicked + the ApplyDestructiveGate label
+            // morph UPDATE TILE → REMOVE TILE).
+            _btn1.onClick.AddListener(OnTileButtonClicked);
 
             _btn2.gameObject.SetActive(true);
             _btn2Text.text = $"COMPILE ({n})";
@@ -353,32 +370,41 @@ namespace NoMapDiscordAdditions.MapCompile
                 _btn3.onClick.AddListener(OnShareClicked);
             }
 
+            // EXIT: tap suspends the session (kept on disk, resumable any time);
+            // hold L-CTRL and it morphs to CLEAR ALL to wipe everything. This
+            // folds the old CANCEL + CLEAR buttons into one under the panel's
+            // "L-CTRL = destructive variant" rule (ApplyDestructiveGate drives
+            // the label/interactable per-frame). _btn5 (the standalone CLEAR) is
+            // now only used by the Idle / resume layouts.
             _btn4.gameObject.SetActive(true);
-            _btn4Text.text = "CANCEL";
-            _btn4.GetComponent<RectTransform>().sizeDelta = new Vector2(110f, BtnHeight);
-            _btn4.interactable = !busy;
-            _btn4.onClick.AddListener(() => MapCompileSession.Suspend());
+            _btn4.GetComponent<RectTransform>().sizeDelta = new Vector2(ExitBtnWidth, BtnHeight);
+            _btn4.onClick.AddListener(OnExitClicked);
+            _btn5.gameObject.SetActive(false);
 
-            // REMOVE TILE only makes sense when the active table already has a
-            // tile in the session — otherwise there is nothing for it to act on.
-            // The L-CTRL gate (ApplyDestructiveGate) handles interactable + label.
-            bool canRemove = MapCompileSession.ActiveTableAlreadyAdded;
-            _btnRemove.gameObject.SetActive(canRemove);
-            if (canRemove)
-            {
-                _btnRemove.GetComponent<RectTransform>().sizeDelta = new Vector2(RemoveBtnWidth, BtnHeight);
-                _btnRemove.onClick.AddListener(OnRemoveTileClicked);
-            }
+            // PINS: choose which pin kinds get stamped on the next COMPILE.
+            // Only meaningful once there's at least one tile (an empty session
+            // compiles nothing), so gate it like COMPILE. The label surfaces the
+            // active-filter count so the player knows pins are being held back
+            // without opening the panel.
+            int hiddenCount = MapCompilePinFilter.ExcludedCount;
+            _btnPins.gameObject.SetActive(true);
+            _btnPinsText.text = hiddenCount > 0 ? $"PINS ({hiddenCount} off)" : "PINS";
+            _btnPins.GetComponent<RectTransform>().sizeDelta = new Vector2(PinsBtnWidth, BtnHeight);
+            _btnPins.interactable = n > 0 && !busy;
+            _btnPins.onClick.AddListener(OnPinsClicked);
 
-            ShowClearButton(true);
+            // Apply the L-CTRL-dependent labels for _btn1 (UPDATE↔REMOVE TILE)
+            // and _btn4 (EXIT↔CLEAR ALL) once now; the per-frame driver keeps
+            // them in sync as the key is pressed/released.
+            ApplyDestructiveGate(force: true);
         }
 
-        // CLEAR wipes the whole session (in-memory + on-disk) and drops back to
-        // Idle. It stays non-interactable unless L-CTRL is held — a destructive
-        // action one stray click away from CANCEL, so the modifier is the
-        // accident guard. ApplyDestructiveGate (driven per-frame) keeps
-        // interactable + label in sync with the live key state — and now also
-        // governs the contextual REMOVE TILE button under the same modifier.
+        // Standalone CLEAR, used only by the Idle / resume-review layouts (where
+        // there's no EXIT button — you're already out of the session, so the
+        // only destructive action is wiping the saved one). It stays
+        // non-interactable unless L-CTRL is held; ApplyDestructiveGate keeps its
+        // label/interactable in sync with the live key state. In the Compiling
+        // state CLEAR is folded into EXIT instead (hold L-CTRL → CLEAR ALL).
         private static void ShowClearButton(bool show)
         {
             _btn5.gameObject.SetActive(show);
@@ -389,10 +415,14 @@ namespace NoMapDiscordAdditions.MapCompile
             ApplyDestructiveGate(force: true);
         }
 
-        // Re-evaluate the L-CTRL hold-to-enable gate for every destructive
-        // button on the panel (CLEAR and the contextual REMOVE TILE). Cheap
-        // enough to call every frame — only touches Unity objects when L-CTRL
-        // actually flips (or on a forced re-apply after a layout rebuild).
+        // Per-frame driver for the "L-CTRL = destructive variant" rule. Re-labels
+        // (and where relevant re-enables) every button whose action changes while
+        // L-CTRL is held:
+        //   • _btn1  UPDATE TILE → REMOVE TILE   (only at an already-added table)
+        //   • _btn4  EXIT        → CLEAR ALL     (Compiling state)
+        //   • _btn5  CLEAR        hold-to-enable (Idle / resume layouts)
+        // Cheap enough to call every frame — only touches Unity objects when
+        // L-CTRL actually flips (or on a forced re-apply after a layout rebuild).
         private static void ApplyDestructiveGate(bool force = false)
         {
             bool held = Input.GetKey(KeyCode.LeftControl);
@@ -400,16 +430,63 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _clearGateHeld = held;
             bool busy = _composeInProgress || _captureInProgress;
+            bool compiling = MapCompileSession.CurrentState == MapCompileSession.State.Compiling;
 
+            // ADD/UPDATE TILE → REMOVE TILE. Only morph at an already-added table
+            // (nothing to remove otherwise) and never over the "CAPTURING..."
+            // progress label.
+            if (compiling && _btn1 != null && _btn1.gameObject.activeSelf
+                && !_captureInProgress && MapCompileSession.ActiveTableAlreadyAdded)
+            {
+                int n = MapCompileSession.Tiles.Count;
+                _btn1Text.text = held ? $"REMOVE TILE ({n})" : $"UPDATE TILE ({n})";
+                _btn1Text.color = held ? DangerColor : MapUI.LabelColor;
+            }
+
+            // EXIT → CLEAR ALL. Both actions are always valid (tap suspends, hold
+            // wipes), so it's interactable regardless of the modifier — only the
+            // label + tint change to telegraph the destructive variant.
+            if (compiling && _btn4 != null && _btn4.gameObject.activeSelf)
+            {
+                _btn4.interactable = !busy;
+                _btn4Text.text = held ? "CLEAR ALL (L-CTRL)" : "EXIT";
+                _btn4Text.color = held ? DangerColor : MapUI.LabelColor;
+            }
+
+            // Standalone CLEAR (Idle / resume): hold-to-enable as before.
             if (_btn5 != null && _btn5.gameObject.activeSelf)
             {
                 _btn5.interactable = held && !busy;
                 _btn5Text.text = held ? "CLEAR" : "CLEAR (L-CTRL)";
             }
-            if (_btnRemove != null && _btnRemove.gameObject.activeSelf)
+        }
+
+        // _btn1 handler: tap captures (ADD/UPDATE TILE); L-CTRL at an
+        // already-added table removes that tile instead.
+        private static void OnTileButtonClicked()
+        {
+            if (_captureInProgress || _composeInProgress) return;
+            if (Input.GetKey(KeyCode.LeftControl) && MapCompileSession.ActiveTableAlreadyAdded)
             {
-                _btnRemove.interactable = held && !busy && MapCompileSession.ActiveTableAlreadyAdded;
-                _btnRemoveText.text = held ? "REMOVE TILE" : "REMOVE (L-CTRL)";
+                OnRemoveTileClicked();
+                return;
+            }
+            OnAddTileClicked();
+        }
+
+        // _btn4 handler (Compiling): tap suspends the session (kept, resumable);
+        // L-CTRL wipes it. Folds the old CANCEL + CLEAR buttons into one.
+        private static void OnExitClicked()
+        {
+            if (_composeInProgress || _captureInProgress) return;
+            if (Input.GetKey(KeyCode.LeftControl))
+            {
+                MapCompileResultPanel.Hide();      // drop any stale compiled preview
+                MapCompileSession.ClearSession();  // → StateChanged → RefreshLayout
+            }
+            else
+            {
+                MapCompileSession.Suspend();        // keep on disk, resume any time
             }
         }
 
@@ -433,12 +510,24 @@ namespace NoMapDiscordAdditions.MapCompile
             MapCompileSession.RemoveActiveTableTile(); // → StateChanged → RefreshLayout
         }
 
-        // Per-frame driver for the destructive-button gate (see
+        // Per-frame driver for the destructive-variant gate (see
         // ApplyDestructiveGate). Lives on the panel container so it dies with
         // it; no-ops while the buttons it governs are inactive.
         private sealed class ClearGateDriver : MonoBehaviour
         {
             private void Update() => ApplyDestructiveGate();
+        }
+
+        private static void OnPinsClicked()
+        {
+            if (_composeInProgress || _captureInProgress) return;
+            if (MapCompileSession.Tiles.Count == 0)
+            {
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    "Capture a tile before choosing pins.");
+                return;
+            }
+            MapCompilePinFilterPanel.Toggle();
         }
 
         private static void OnShareClicked()
