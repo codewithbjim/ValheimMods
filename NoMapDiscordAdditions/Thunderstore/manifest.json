@@ -2,7 +2,7 @@
   "name": "NoMapDiscordAdditions",
   "version_number": "1.2.0",
   "website_url": "https://github.com/codewithbjim/ValheimMods",
-  "description": "Large-map capture to Discord/clipboard, plus a multi-table MAP COMPILE mode that stitches every cartography table you visit into a single high-res PNG. Server-synced settings, a per-pin compile filter, clean shots with all UI overlays hidden.",
+  "description": "Share Valheim's large map: post to Discord or copy to clipboard, or stitch every cartography table you visit into one high-res PNG with MAP COMPILE. Tile sharing, a PINS filter, optional map styles, and server-synced settings.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2333",
     "ValheimModding-JsonDotNET-13.0.4",

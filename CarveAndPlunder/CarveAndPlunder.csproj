@@ -1,0 +1,164 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net481</TargetFramework>
+    <AssemblyName>CarveAndPlunder</AssemblyName>
+    <RootNamespace>CarveAndPlunder</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ValheimDir>E:\ValheimMods\Valheim</ValheimDir>
+    <ValheimManagedDir>$(ValheimDir)\valheim_Data\Managed</ValheimManagedDir>
+    <ValheimPublicizedDir>$(ValheimManagedDir)\publicized_assemblies</ValheimPublicizedDir>
+    <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
+    <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
+    <ValheimCopyPluginsDir>E:\ValheimMods\Valheim v0.221.12\Valheim\BepInEx\scripts</ValheimCopyPluginsDir>
+    <JotunnDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-Jotunn\Jotunn.dll</JotunnDll>
+    <TSPluginsDir>E:\ValheimMods\ValheimMods\CarveAndPlunder\Thunderstore\plugins</TSPluginsDir>
+  </PropertyGroup>
+
+  <!-- Debug builds deploy straight into the active r2modmanPlus dev profile so a
+       launch picks up the fresh DLL. Mirrors the sibling NoMapDiscordAdditions setup. -->
+  <Target Name="CopyToProfilePlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
+    <MakeDir Directories="$(ProfilePluginsDir)" Condition="!Exists('$(ProfilePluginsDir)')" />
+    <ItemGroup>
+      <_DeployFiles Include="$(TargetPath)" />
+      <_DeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DeployFiles)"
+          DestinationFolder="$(ProfilePluginsDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ProfilePluginsDir)" />
+  </Target>
+
+  <Target Name="CopyToValheimCopyPlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
+    <MakeDir Directories="$(ValheimCopyPluginsDir)" Condition="!Exists('$(ValheimCopyPluginsDir)')" />
+    <ItemGroup>
+      <_DeployFiles Include="$(TargetPath)" />
+      <_DeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DeployFiles)"
+          DestinationFolder="$(ValheimCopyPluginsDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ValheimCopyPluginsDir)" />
+  </Target>
+
+  <!-- Release builds stage the DLL into the Thunderstore package folder, so the
+       published zip never ships a stale DLL. Run publish-thunderstore.ps1 after. -->
+  <Target Name="CopyToThunderstorePlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <MakeDir Directories="$(TSPluginsDir)" Condition="!Exists('$(TSPluginsDir)')" />
+    <ItemGroup>
+      <_TSDeployFiles Include="$(TargetPath)" />
+      <_TSDeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_TSDeployFiles)"
+          DestinationFolder="$(TSPluginsDir)"
+          SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_TSDeployFiles->'%(Filename)%(Extension)', ', ') -> $(TSPluginsDir)" />
+  </Target>
+
+  <!-- Bundled assets (skill icon) embedded into the DLL so nothing ships loose. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Looting.png" />
+  </ItemGroup>
+
+  <!-- Jotunn — used for server-authoritative config sync via its
+       SynchronizationManager. Declaring Jotunn as a BepInEx dependency (see
+       Plugin.cs) auto-includes this plugin's config file in sync; entries bound
+       with Config.BindConfig(synced: true) are flagged IsAdminOnly and pushed
+       server -> client. Referenced from the active r2modmanPlus profile (ZenMap
+       already depends on Jotunn, so the DLL is present alongside it). -->
+  <ItemGroup>
+    <Reference Include="Jotunn">
+      <HintPath>$(JotunnDll)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- BepInEx -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExDir)\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExDir)\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Valheim (publicized) -->
+  <ItemGroup>
+    <Reference Include="assembly_valheim">
+      <HintPath>$(ValheimPublicizedDir)\assembly_valheim_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- ZInput lives in assembly_utils -->
+    <Reference Include="assembly_utils">
+      <HintPath>$(ValheimPublicizedDir)\assembly_utils_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Localization lives in assembly_guiutils -->
+    <Reference Include="assembly_guiutils">
+      <HintPath>$(ValheimPublicizedDir)\assembly_guiutils_publicized.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Unity's netstandard 2.1 facade (avoids CS1705 against Unity module DLLs). -->
+  <ItemGroup>
+    <Reference Include="netstandard">
+      <HintPath>$(ValheimManagedDir)\netstandard.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Unity -->
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- UIModule: RectTransform / Canvas / CanvasGroup for the cloned stamina bar. -->
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- UnityEngine.UI: Image, used by GuiBar (referenced transitively). -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- TextMeshPro: TMP_Text for the cloned bar's label. -->
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(ValheimManagedDir)\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- AnimationModule: Animator, stripped from the cloned stamina bar. -->
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(ValheimManagedDir)\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- System.Drawing decodes the embedded PNG icon. We avoid
+       Texture2D.LoadImage because its ReadOnlySpan<byte> overload drags in
+       System.ReadOnlySpan during overload resolution, which net481's mscorlib
+       doesn't expose (CS7069). Mirrors the sibling NoMapDiscordAdditions. -->
+  <ItemGroup>
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+</Project>
