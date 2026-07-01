@@ -30,6 +30,11 @@ namespace NoMapDiscordAdditions.MapCompile
         // paints over explored terrain from a complete tile.
         public bool FullyMapped = true;
 
+        // Kept in the session but skipped by the next COMPILE / SAVE. Toggled
+        // from the Manage Tiles panel; persisted so it survives resume. Default
+        // false ⇒ tiles from older sessions load as included.
+        public bool ExcludedFromCompile = false;
+
         // Set only for tiles brought in from another player's share (via the
         // incoming folder). Local table captures leave both null. ImportKey is
         // a stable identity used to dedup re-imports of the same shared tile;

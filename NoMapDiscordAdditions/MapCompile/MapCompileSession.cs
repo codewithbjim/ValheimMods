@@ -285,20 +285,7 @@ namespace NoMapDiscordAdditions.MapCompile
             int idx = FindTileNearTable(ActiveTablePos.Value);
             if (idx < 0) return false;
 
-            var tile = _tiles[idx];
-            try
-            {
-                if (!string.IsNullOrEmpty(tile.PngPath) && File.Exists(tile.PngPath))
-                    File.Delete(tile.PngPath);
-            }
-            catch (Exception ex)
-            {
-                // Best-effort: a missing/locked PNG should not block index
-                // cleanup — the in-memory tile is the source of truth for the
-                // composite, and a stale file is harmless (Resume re-scans).
-                ModLog.Warn($"[NoMapDiscordAdditions] Tile PNG delete failed: {ex.Message}");
-            }
-
+            DeleteTilePng(_tiles[idx]);
             _tiles.RemoveAt(idx);
             SaveIndex();
             StateChanged?.Invoke();
@@ -307,6 +294,82 @@ namespace NoMapDiscordAdditions.MapCompile
             Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
                 $"Tile removed ({_tiles.Count} {tileWord}).");
             return true;
+        }
+
+        /// <summary>
+        /// Remove a specific tile by its <see cref="MapCompileTile.Index"/> —
+        /// the Manage Tiles panel's per-row delete, which (unlike
+        /// <see cref="RemoveActiveTableTile"/>) can act on any tile including
+        /// imported ones and tables the player is nowhere near. The PNG is
+        /// deleted and the index rewritten before this returns. Returns true if
+        /// a tile with that index existed and was removed.
+        /// </summary>
+        public static bool RemoveTile(int index)
+        {
+            if (CurrentState != State.Compiling) return false;
+
+            int idx = _tiles.FindIndex(t => t.Index == index);
+            if (idx < 0) return false;
+
+            DeleteTilePng(_tiles[idx]);
+            _tiles.RemoveAt(idx);
+            SaveIndex();
+            StateChanged?.Invoke();
+
+            string tileWord = _tiles.Count == 1 ? "tile" : "tiles";
+            Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                $"Tile removed ({_tiles.Count} {tileWord}).");
+            return true;
+        }
+
+        /// <summary>
+        /// Toggle whether a tile is included in the next COMPILE / SAVE without
+        /// deleting it (the Manage Tiles panel's non-destructive "hide"). The
+        /// flag lives on the tile and is persisted so it survives resume. No-op
+        /// if no tile with that index exists or the value is unchanged.
+        /// </summary>
+        public static void SetTileExcluded(int index, bool excluded)
+        {
+            if (CurrentState != State.Compiling) return;
+            int idx = _tiles.FindIndex(t => t.Index == index);
+            if (idx < 0) return;
+            if (_tiles[idx].ExcludedFromCompile == excluded) return;
+
+            _tiles[idx].ExcludedFromCompile = excluded;
+            SaveIndex();
+            StateChanged?.Invoke();
+        }
+
+        /// <summary>Tiles the next COMPILE / SAVE will actually composite.</summary>
+        public static int IncludedTileCount
+        {
+            get
+            {
+                int n = 0;
+                foreach (var t in _tiles)
+                    if (!t.ExcludedFromCompile) n++;
+                return n;
+            }
+        }
+
+        /// <summary>Count of tiles held back from the composite via the Manage panel.</summary>
+        public static int ExcludedTileCount => _tiles.Count - IncludedTileCount;
+
+        // Best-effort PNG delete shared by the remove paths: a missing/locked
+        // file should not block index cleanup — the in-memory tile is the
+        // source of truth for the composite, and a stale file is harmless
+        // (Resume re-scans). Does NOT touch _tiles or persist; callers do that.
+        private static void DeleteTilePng(MapCompileTile tile)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(tile.PngPath) && File.Exists(tile.PngPath))
+                    File.Delete(tile.PngPath);
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] Tile PNG delete failed: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -507,6 +570,8 @@ namespace NoMapDiscordAdditions.MapCompile
             public long TimestampMs;
             // true when absent (older sessions) → loaded as a complete tile.
             public bool FullyMapped = true;
+            // false when absent (older sessions) → loaded as included.
+            public bool ExcludedFromCompile = false;
             // Present only for imported tiles. NullValueHandling.Ignore keeps
             // them out of the JSON for ordinary table captures, so sessions
             // written by older builds load unchanged.
@@ -547,6 +612,7 @@ namespace NoMapDiscordAdditions.MapCompile
                     PixelH = t.PixelHeight,
                     TimestampMs = t.TimestampUnixMs,
                     FullyMapped = t.FullyMapped,
+                    ExcludedFromCompile = t.ExcludedFromCompile,
                     ImportKey = t.ImportKey,
                     Src = t.SourcePlayer,
                 });
@@ -608,6 +674,7 @@ namespace NoMapDiscordAdditions.MapCompile
                     PngPath = pngPath,
                     TimestampUnixMs = d.TimestampMs,
                     FullyMapped = d.FullyMapped,
+                    ExcludedFromCompile = d.ExcludedFromCompile,
                     ImportKey = d.ImportKey,
                     SourcePlayer = d.Src,
                 });
