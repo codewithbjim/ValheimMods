@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0
+
+### Interactive Web Map export (new)
+
+- Added a **`WEB MAP`** button to the compile result panel (next to `SAVE`). It writes a **self-contained, offline, interactive web viewer** to `compiled/webmap_<world>/` — double-click its `index.html` and it opens in any browser with **no server, no internet, and no third-party libraries**
+- Unlike `SAVE` (a flat PNG with the pins baked in), the web map keeps the pins as a **filterable overlay**: it recomposes a **pin-free base image** at native resolution (the same path `SAVE` uses) and ships the pins as data plus one baked PNG per distinct pin icon/tint, so the overlay lands pixel-for-pixel where the baked pins would have
+- The viewer supports **drag-to-pan, wheel-zoom, per-kind pin filtering** (with solo / zoom-to-all), a **searchable pin list**, click-to-open pin details, a labels toggle, a coordinate grid, pin clustering, and a measure tool. Pins are grouped by kind exactly like the `PINS` panel (most-common first, then alphabetical), and mod-added pin kinds get their own group automatically
+- Excluded tiles (see below) and pins outside a captured tile are dropped, so the web map mirrors the compiled preview exactly. Pin tints match the live map — ZenMap's boss-orange / private-peach hues carry over
+- Re-exporting **updates the same per-world folder in place** (stable, bookmarkable `index.html`) rather than spawning a timestamped copy, and wipes stale icons / old base images so nothing orphaned is left behind. After the export the button morphs to **`COPY DIR`** so the next click puts the bundle folder on your clipboard
+- The base image honours your `Output.Output Format` (`.jpg` / `.png`) and encodes off-thread like `SAVE`, so the button can't be double-clicked mid-export
+
+### Manage Tiles panel (new)
+
+- Added a **`TILES`** button to the compile panel that opens a **MANAGE TILES** overlay — a scrollable grid listing every captured tile in the active session, each with a thumbnail, a label + metadata line, and two per-row actions:
+  - **`EXCLUDE` / `INCLUDE`** — hold a tile back from (or return it to) the next `COMPILE` **without deleting it**, so you can A/B a composite or drop a bad reading and get it back later
+  - **`REMOVE`** — delete that tile outright
+- Unlike the at-the-table `UPDATE TILE` / `REMOVE TILE` controls, this panel can act on **any** tile — including imported/shared tiles and tables the player is nowhere near
+- The `TILES` button label shows the excluded count (`TILES (10, 2 off)`) so you can tell tiles are held back without opening the panel. The exclusion set is **persisted with the session** and survives resume; `COMPILE`, the `PINS` listing, and the `WEB MAP` export all honour it
+- Thumbnails decode lazily (one per frame) so opening the panel on a large session (~90 tiles on a busy server) doesn't hitch
+
 ## 1.2.0
 
 ### Map Compile — pick which pins land on the composite (new)

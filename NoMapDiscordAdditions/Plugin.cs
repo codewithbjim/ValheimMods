@@ -38,7 +38,7 @@ namespace NoMapDiscordAdditions
 
         public const string PluginGUID = "com.virtualbjorn.nomapdiscordadditions";
         public const string PluginName = "NoMapDiscordAdditions";
-        public const string PluginVersion = "1.2.0";
+        public const string PluginVersion = "1.3.0";
 
         public static Plugin Instance { get; private set; }
         public static ConfigEntry<string> WebhookUrl;

@@ -17,8 +17,10 @@ Built for no-map (and normal) servers where the map is revealed table-by-table. 
 - [MAP COMPILE](#map-compile)
   - [The compile panel](#the-compile-panel)
   - [Adding, updating, and removing tiles](#adding-updating-and-removing-tiles)
+  - [Managing captured tiles (TILES panel)](#managing-captured-tiles-tiles-panel)
   - [Choosing which pins appear (PINS panel)](#choosing-which-pins-appear-pins-panel)
   - [Compiling: the result panel](#compiling-the-result-panel)
+  - [Interactive Web Map (WEB MAP)](#interactive-web-map-web-map)
   - [Sharing tiles between players](#sharing-tiles-between-players)
   - [Resuming, suspending, and clearing a session](#resuming-suspending-and-clearing-a-session)
 - [Pin captions and table names](#pin-captions-and-table-names)
@@ -89,9 +91,9 @@ A panel appears on the bottom-left of the large map. Its buttons change with the
 | State | Buttons |
 |---|---|
 | **Idle** (no active session) | `START COMPILE`, or `RESUME COMPILE (N)` + `CLEAR` when a saved session exists |
-| **Compiling** (active session) | `ADD TILE (N)` / `UPDATE TILE (N)`, `PINS`, `COMPILE (N)`, `SHARE (N)` / `EXPORT (N)`, `EXIT` |
+| **Compiling** (active session) | `ADD TILE (N)` / `UPDATE TILE (N)`, `TILES (N)`, `PINS`, `COMPILE (N)`, `SHARE (N)` / `EXPORT (N)`, `EXIT` |
 
-`N` is the current tile count.
+`N` is the current tile count. The `TILES` label also shows how many tiles are currently excluded (`TILES (10, 2 off)`), and `PINS` shows how many pin kinds are hidden (`PINS (3 off)`).
 
 ### Adding, updating, and removing tiles
 
@@ -101,6 +103,15 @@ A panel appears on the bottom-left of the large map. Its buttons change with the
 - Each tile is saved to disk immediately after capture, scoped to the current **world + character**. A crash or disconnect mid-run loses nothing.
 
 > **The "L-CTRL = destructive variant" rule.** Throughout the compile panel, holding **Left CTRL** turns a button's safe action into its destructive one, and the label turns **red** to telegraph it: `UPDATE TILE` → `REMOVE TILE`, `EXIT` → `CLEAR ALL`. Nothing destructive happens on a plain click.
+
+### Managing captured tiles (TILES panel)
+
+**TILES** opens the **MANAGE TILES** overlay — a scrollable grid listing **every** captured tile in the active session, each card with a thumbnail, a label + metadata line, and two per-row actions:
+
+- **EXCLUDE / INCLUDE** — holds a tile back from (or returns it to) the next `COMPILE` **without deleting it**. Use it to A/B a composite or drop a bad reading you might want back later. Excluded tiles are also left out of the [WEB MAP export](#interactive-web-map-web-map) and the `PINS` listing, so everything mirrors the compiled preview.
+- **REMOVE** — deletes that tile and its PNG outright.
+
+Unlike the at-the-table `UPDATE TILE` / `REMOVE TILE` controls, this panel can act on **any** tile — including imported/shared tiles and tables you're nowhere near. The excluded count shows on the button label (`TILES (10, 2 off)`), is **saved with the session** (it survives resume), and resets with the session. Thumbnails decode lazily so opening the panel on a large session (dozens of tiles) doesn't hitch.
 
 ### Choosing which pins appear (PINS panel)
 
@@ -117,15 +128,31 @@ A panel appears on the bottom-left of the large map. Its buttons change with the
 
 ### Compiling: the result panel
 
-**COMPILE** composites every tile and opens the result panel with a preview and five actions:
+**COMPILE** composites every tile and opens the result panel with a preview and these actions:
 
 - **SAVE** writes a **full native-resolution** image to disk. It recomposes so the sharpest tile maps 1:1 and no tile is downscaled below its capture resolution (a 2000×500 capture stays 2000×500 in its region), giving a zoomable, editable map. Capped at 8192 px on the longest axis. Format follows [`Output.Output Format`](#output-format); the status line reports dimensions, format, and encoded size (e.g. `Saved 7234×4521px JPEG q88 3.4 MB native resolution`) and the filename includes the dimensions. The button then morphs into **COPY DIR** so a second click puts the containing folder on the clipboard.
+- **WEB MAP** exports an offline, interactive web viewer — see [Interactive Web Map](#interactive-web-map-web-map) below. Like `SAVE` it morphs into **COPY DIR** after the export so the next click copies the bundle folder.
 - **COPY** writes a JPEG to the clipboard at the preview size (4096 px cap on the long edge).
 - **SEND TO DISCORD** posts the composed image with the compile message template (`{player}`, `{tileCount}` placeholders), encoded per `Output.Output Format`. The status updates to `Sent to Discord.` / `Send failed — see log.` when the request finishes.
 - **DISCARD** deletes the session.
 - **DONE** drops you back into compile mode with every tile intact, so you can keep adding tables.
 
-**SAVE / COPY / SEND / DONE are all non-destructive** — your session is kept on disk and stays resumable. Only **DISCARD** (or **CLEAR ALL** while compiling) deletes it. Closing the map with the result panel open doesn't strand the session: the next map open shows **RESUME COMPILE (N)** (it does not reopen the result panel — the transient compiled PNG is discarded; click **COMPILE** again for a fresh result).
+**SAVE / COPY / SEND / WEB MAP / DONE are all non-destructive** — your session is kept on disk and stays resumable. Only **DISCARD** (or **CLEAR ALL** while compiling) deletes it. Closing the map with the result panel open doesn't strand the session: the next map open shows **RESUME COMPILE (N)** (it does not reopen the result panel — the transient compiled PNG is discarded; click **COMPILE** again for a fresh result).
+
+### Interactive Web Map (WEB MAP)
+
+**WEB MAP** (on the result panel, next to `SAVE`) exports a **self-contained, offline, interactive viewer** to `compiled/webmap_<world>/`. Double-click its **`index.html`** and it opens in any browser — **no server, no internet, and no third-party libraries**.
+
+Where `SAVE` gives you a flat image with the pins baked in, the web map keeps the pins as a **filterable overlay**: it recomposes a **pin-free base image** at native resolution (the same path `SAVE` uses) and ships the pins as data plus one small PNG per distinct pin icon/tint, so the overlay lands pixel-for-pixel where the baked pins would have. Pin tints match the live map (ZenMap's boss-orange / private-peach hues carry over).
+
+In the viewer you can:
+
+- **Pan** by dragging and **zoom** with the wheel (or the on-screen `+` / `−` buttons); press **F** to fit the whole map.
+- **Filter pins by kind** from the Kinds list — hide a kind, solo just one, or zoom-to-all of a kind. Kinds are grouped and ordered exactly like the `PINS` panel, and mod-added pin kinds appear automatically.
+- **Search the pin list** to jump to any named pin, and **click a pin** to open its details.
+- Toggle **labels** (`L`), a **coordinate grid** (`G`), pin **clustering**, and a **measure** tool.
+
+[Excluded tiles](#managing-captured-tiles-tiles-panel) and pins outside a captured tile are left out, so the web map mirrors the compiled preview exactly. Re-exporting **updates the same per-world folder in place** — a stable, bookmarkable `index.html` — instead of piling up timestamped copies, and clears out stale icons / old base images. After the export the button morphs to **COPY DIR** so a second click puts the bundle folder on your clipboard. The base image honours [`Output.Output Format`](#output-format).
 
 ### Sharing tiles between players
 
@@ -263,13 +290,14 @@ Everything lives under `BepInEx/config/NoMapDiscordAdditions/`:
 
 | Path | Contents |
 |---|---|
-| `compile-sessions/<world>/<character>/` | Active compile session: tile PNGs + an `index.json` (tile world rects, table names, and your PINS selection). |
+| `compile-sessions/<world>/<character>/` | Active compile session: tile PNGs + an `index.json` (tile world rects, table names, your PINS selection, and which tiles are excluded). |
+| `compiled/` | `SAVE` output and, per world, a `webmap_<world>/` folder holding the [WEB MAP](#interactive-web-map-web-map) bundle (`index.html`, `data.js`, the base image, and `icons/`). |
 | `compile-share/out/<world>/` | Exported share tiles (self-describing PNGs) for manual drag-into-Discord. |
 | `compile-share/incoming/` | Drop teammates' shared tiles here; auto-imported on the next map open during a session. |
 | `compile-share/incoming/processed/` | Imported tiles are moved here. |
 | `compile-share/incoming/ignored/` | Tiles for a different world (skipped) are moved here. |
 
-Saved/compiled output (from **SAVE**) goes where the status line reports — typically a `compiled-maps`-style folder; the **COPY DIR** button puts the exact folder on your clipboard.
+Saved/compiled output (from **SAVE** or **WEB MAP**) goes where the status line reports — a `compiled/`-style folder; the **COPY DIR** button puts the exact folder on your clipboard.
 
 ---
 

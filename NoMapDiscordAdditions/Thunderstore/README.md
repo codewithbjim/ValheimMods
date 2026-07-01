@@ -15,6 +15,8 @@ Built for no-map (and normal) servers. Message templates, output format, and til
 
 - **One-click sharing** — SEND MAP posts to a Discord webhook; COPY MAP puts a full-resolution image on your clipboard. Hotkeys (`F10` / `F11`) shown on the buttons and rebindable.
 - **MAP COMPILE** — walk between cartography tables, add each as a tile, and composite them into one coordinate-accurate PNG. Sessions persist per world + character and resume after a restart.
+- **Interactive WEB MAP** — export a self-contained, offline web viewer (double-click `index.html`, no server or internet needed) with drag-pan, zoom, a searchable pin list, and per-kind pin filtering over a pin-free base image.
+- **Manage Tiles** — a `TILES` panel to review every captured tile and exclude any from the next compile without deleting it (or remove it outright), including imported tiles from tables you're nowhere near.
 - **PINS filter** — choose exactly which pin kinds appear on a compiled map (mod-added pins included automatically).
 - **Tile sharing** — pool map coverage with teammates by exchanging self-describing PNG tiles.
 - **Map styles** — optional Old Map / Chart / Topographical / Satellite rendering for captures and compiled tiles.
