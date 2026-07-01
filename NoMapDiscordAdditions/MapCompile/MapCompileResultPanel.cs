@@ -243,12 +243,9 @@ namespace NoMapDiscordAdditions.MapCompile
             if (result == null) { _saveInProgress = false; yield break; }
 
             // Tiles are stable while Reviewing (AddTile requires Compiling), but
-            // snapshot anyway. Excluded tiles are filtered out so SAVE matches
-            // the compiled preview the player is looking at. Pins MUST be
-            // captured on the main thread (TMP layout, live UI components).
-            var tiles = new List<MapCompileTile>();
-            foreach (var t in MapCompileSession.Tiles)
-                if (!t.ExcludedFromCompile) tiles.Add(t);
+            // snapshot anyway. Pins MUST be captured on the main thread (TMP
+            // layout, live UI components).
+            var tiles = new List<MapCompileTile>(MapCompileSession.Tiles);
             var pins = MapCompilePinSnapshot.Capture(out float refScreenW);
 
             MapCompositor.CompiledMap full = null;
