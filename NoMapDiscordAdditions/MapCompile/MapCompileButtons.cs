@@ -42,6 +42,15 @@ namespace NoMapDiscordAdditions.MapCompile
         private static TextMeshProUGUI _btnPinsText;
         private const float PinsBtnWidth = 150f;
 
+        // TILES: opens the Manage Tiles panel (MapCompileManagePanel) — a
+        // scrollable list of every captured tile with per-tile Remove and
+        // exclude-from-compile toggles. Shown only while Compiling with at
+        // least one tile, alongside PINS.
+        private static Button _btnTiles;
+        private static TextMeshProUGUI _btnTilesText;
+        // Sized for the widest label it hosts, "TILES (10, 2 off)".
+        private const float TilesBtnWidth = 178f;
+
         private static bool _composeInProgress;
         // Styled tile captures run a Map Style pipeline off-thread (~hundreds
         // of ms to a second per tile) — long enough for the player to spam
@@ -106,6 +115,8 @@ namespace NoMapDiscordAdditions.MapCompile
             // After ADD/UPDATE TILE, before COMPILE — see _btnPins field comment.
             _btnPins = MapUI.CreateButton("CompileBtnPins", _containerObj.transform,
                 PinsBtnWidth, BtnHeight, "", out _btnPinsText);
+            _btnTiles = MapUI.CreateButton("CompileBtnTiles", _containerObj.transform,
+                TilesBtnWidth, BtnHeight, "", out _btnTilesText);
             _btn2 = MapUI.CreateButton("CompileBtn2", _containerObj.transform,
                 ActionBtnWidth, BtnHeight, "", out _btn2Text);
             _btn3 = MapUI.CreateButton("CompileBtn3", _containerObj.transform,
@@ -139,12 +150,14 @@ namespace NoMapDiscordAdditions.MapCompile
                 TryAutoImport();
                 RefreshLayout();
             }
-            else if (MapCompilePinFilterPanel.IsVisible)
+            else
             {
-                // Don't strand the PINS overlay on screen when the panel hides
-                // (map closed / compile mode unavailable). Selections are kept
-                // in MapCompilePinFilter regardless.
-                MapCompilePinFilterPanel.Hide();
+                // Don't strand either overlay on screen when the panel hides
+                // (map closed / compile mode unavailable). The PINS selection is
+                // kept in MapCompilePinFilter and the tile changes are already
+                // persisted, so tearing them down loses nothing.
+                if (MapCompilePinFilterPanel.IsVisible) MapCompilePinFilterPanel.Hide();
+                if (MapCompileManagePanel.IsVisible) MapCompileManagePanel.Hide();
             }
             if (!visible) _autoImportedThisOpen = false;
         }
@@ -201,6 +214,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn4.onClick.RemoveAllListeners();
             _btn5.onClick.RemoveAllListeners();
             _btnPins.onClick.RemoveAllListeners();
+            _btnTiles.onClick.RemoveAllListeners();
 
             switch (MapCompileSession.CurrentState)
             {
@@ -240,6 +254,7 @@ namespace NoMapDiscordAdditions.MapCompile
             int active = 0;
             if (_btn1.gameObject.activeSelf) { w += _btn1.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btnPins.gameObject.activeSelf) { w += _btnPins.GetComponent<RectTransform>().sizeDelta.x; active++; }
+            if (_btnTiles.gameObject.activeSelf) { w += _btnTiles.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn2.gameObject.activeSelf) { w += _btn2.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn3.gameObject.activeSelf) { w += _btn3.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn4.gameObject.activeSelf) { w += _btn4.GetComponent<RectTransform>().sizeDelta.x; active++; }
@@ -277,6 +292,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
             _btnPins.gameObject.SetActive(false);
+            _btnTiles.gameObject.SetActive(false);
             ShowClearButton(true);
         }
 
@@ -313,6 +329,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
             _btnPins.gameObject.SetActive(false);
+            _btnTiles.gameObject.SetActive(false);
             // Only worth offering when there's a saved session on disk to wipe.
             ShowClearButton(resumable);
         }
@@ -349,10 +366,15 @@ namespace NoMapDiscordAdditions.MapCompile
             // morph UPDATE TILE → REMOVE TILE).
             _btn1.onClick.AddListener(OnTileButtonClicked);
 
+            // COMPILE counts only the tiles that will actually composite —
+            // excluding tiles in the Manage panel drops this without touching
+            // the ADD/UPDATE TILE total. When every tile is excluded it greys
+            // out (nothing to compile).
+            int included = MapCompileSession.IncludedTileCount;
             _btn2.gameObject.SetActive(true);
-            _btn2Text.text = $"COMPILE ({n})";
+            _btn2Text.text = $"COMPILE ({included})";
             _btn2.GetComponent<RectTransform>().sizeDelta = new Vector2(ActionBtnWidth, BtnHeight);
-            _btn2.interactable = n > 0 && !busy;
+            _btn2.interactable = included > 0 && !busy;
             _btn2.onClick.AddListener(OnCompileClicked);
 
             // SHARE: export every tile (incl. previously-imported) as
@@ -392,6 +414,17 @@ namespace NoMapDiscordAdditions.MapCompile
             _btnPins.GetComponent<RectTransform>().sizeDelta = new Vector2(PinsBtnWidth, BtnHeight);
             _btnPins.interactable = n > 0 && !busy;
             _btnPins.onClick.AddListener(OnPinsClicked);
+
+            // TILES: manage the captured tiles (remove / exclude any one). Like
+            // PINS it only makes sense once something's been captured. The label
+            // surfaces the excluded count so the player sees tiles are being
+            // held back without opening the panel.
+            int excluded = MapCompileSession.ExcludedTileCount;
+            _btnTiles.gameObject.SetActive(true);
+            _btnTilesText.text = excluded > 0 ? $"TILES ({n}, {excluded} off)" : $"TILES ({n})";
+            _btnTiles.GetComponent<RectTransform>().sizeDelta = new Vector2(TilesBtnWidth, BtnHeight);
+            _btnTiles.interactable = n > 0 && !busy;
+            _btnTiles.onClick.AddListener(OnManageTilesClicked);
 
             // Apply the L-CTRL-dependent labels for _btn1 (UPDATE↔REMOVE TILE)
             // and _btn4 (EXIT↔CLEAR ALL) once now; the per-frame driver keeps
@@ -530,6 +563,18 @@ namespace NoMapDiscordAdditions.MapCompile
             MapCompilePinFilterPanel.Toggle();
         }
 
+        private static void OnManageTilesClicked()
+        {
+            if (_composeInProgress || _captureInProgress) return;
+            if (MapCompileSession.Tiles.Count == 0)
+            {
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    "No tiles to manage yet.");
+                return;
+            }
+            MapCompileManagePanel.Toggle();
+        }
+
         private static void OnShareClicked()
         {
             if (_composeInProgress || _captureInProgress) return;
@@ -612,6 +657,12 @@ namespace NoMapDiscordAdditions.MapCompile
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "No tiles to compile.");
                 return;
             }
+            if (MapCompileSession.IncludedTileCount == 0)
+            {
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    "All tiles excluded — nothing to compile.");
+                return;
+            }
 
             var plugin = Plugin.Instance;
             if (plugin == null) return;
@@ -625,8 +676,13 @@ namespace NoMapDiscordAdditions.MapCompile
             Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Compiling map...");
 
             // Snapshot tile list — session state may change if Discard runs
-            // before this completes (we ignore that and finish anyway).
-            var tilesSnapshot = new System.Collections.Generic.List<MapCompileTile>(MapCompileSession.Tiles);
+            // before this completes (we ignore that and finish anyway). Tiles
+            // the player excluded in the Manage panel are filtered out here so
+            // result.TileCount and the pin-clip stay consistent with what's
+            // actually composited.
+            var tilesSnapshot = new System.Collections.Generic.List<MapCompileTile>();
+            foreach (var t in MapCompileSession.Tiles)
+                if (!t.ExcludedFromCompile) tilesSnapshot.Add(t);
             // Hardcoded preview cap — 4096 keeps the compile preview snappy to
             // recode for COPY / SEND while still covering large compositions
             // at usable density. SAVE uses ComposeNative which goes up to 8192.
