@@ -34,6 +34,8 @@ namespace NoMapDiscordAdditions.MapCompile
         private static TextMeshProUGUI _statusText;
         // Save → Copy Dir morph: held so OnSave can rewrite the label.
         private static TextMeshProUGUI _saveBtnText;
+        // Web-map export button text, held so the handler can show progress.
+        private static TextMeshProUGUI _webBtnText;
 
         public static bool IsVisible => _containerObj != null && _containerObj.activeSelf;
 
@@ -115,11 +117,13 @@ namespace NoMapDiscordAdditions.MapCompile
             // it has to host (SAVE → COPY DIR after first save).
             float wCopy    = 100f;
             float wSave    = 130f;
+            float wWeb     = 130f;
             float wSend    = 180f;
             float wDiscard = 110f;
             float wDone    = 90f;
 
             var saveBtn    = MapUI.CreateButton("Save",    rowObj.transform, wSave,    ButtonHeight, "SAVE",            out _saveBtnText);
+            var webBtn     = MapUI.CreateButton("Web",     rowObj.transform, wWeb,     ButtonHeight, "WEB MAP",         out _webBtnText);
             var copyBtn    = MapUI.CreateButton("Copy",    rowObj.transform, wCopy,    ButtonHeight, "COPY",            out _);
             var sendBtn    = MapUI.CreateButton("Send",    rowObj.transform, wSend,    ButtonHeight, "SEND TO DISCORD", out _);
             var discardBtn = MapUI.CreateButton("Discard", rowObj.transform, wDiscard, ButtonHeight, "DISCARD",         out _);
@@ -127,6 +131,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
             copyBtn.onClick.AddListener(OnCopy);
             saveBtn.onClick.AddListener(OnSaveOrCopyDir);
+            webBtn.onClick.AddListener(OnWebMap);
             sendBtn.onClick.AddListener(OnSend);
             discardBtn.onClick.AddListener(OnDiscard);
             doneBtn.onClick.AddListener(OnDone);
@@ -134,7 +139,7 @@ namespace NoMapDiscordAdditions.MapCompile
             // SEND is gated on a configured webhook URL; everything else is always usable.
             sendBtn.interactable = !string.IsNullOrEmpty(ModHelpers.EffectiveConfig.WebhookUrl);
 
-            float rowW = wCopy + wSave + wSend + wDiscard + wDone + 8f * 4f;
+            float rowW = wCopy + wSave + wWeb + wSend + wDiscard + wDone + 8f * 5f;
             rowRect.sizeDelta = new Vector2(rowW, ButtonHeight);
 
             // Total panel size: preview + title + status + buttons + spacing/padding.
@@ -161,8 +166,11 @@ namespace NoMapDiscordAdditions.MapCompile
             _result = null;
             _statusText = null;
             _saveBtnText = null;
+            _webBtnText = null;
             _savedFilePath = null;
             _saveInProgress = false;
+            _webInProgress = false;
+            _webBundleDir = null;
         }
 
         /// <summary>
@@ -194,6 +202,14 @@ namespace NoMapDiscordAdditions.MapCompile
         // Guards against a second SAVE click while the full-resolution recompose
         // coroutine is still running (it can take a few seconds).
         private static bool _saveInProgress;
+
+        // Guards against a second WEB MAP click while the export coroutine runs.
+        private static bool _webInProgress;
+
+        // Folder the web-map bundle was written to. Drives the WEB MAP → COPY DIR
+        // morph the same way _savedFilePath does for SAVE: null = export state,
+        // non-null = copy-the-folder state.
+        private static string _webBundleDir;
 
         private static void OnCopy()
         {
@@ -367,6 +383,60 @@ namespace NoMapDiscordAdditions.MapCompile
             catch (Exception ex)
             {
                 ModLog.Error($"[NoMapDiscordAdditions] Copy dir failed: {ex.Message}");
+                SetStatus("Copy directory failed — see log.");
+            }
+        }
+
+        // WEB MAP: export a self-contained, offline interactive web viewer
+        // (pin-free base image + pins-as-data + one baked PNG per pin kind +
+        // index.html) into a folder under compiled/. Like SAVE it recomposes
+        // the base at native resolution off-thread, so guard against re-entry
+        // while the coroutine runs. Once the bundle is on disk the button
+        // morphs to COPY DIR so the next click puts the folder on the clipboard.
+        private static void OnWebMap()
+        {
+            if (_webInProgress) return;
+            if (_webBundleDir != null) { DoCopyWebDir(); return; }
+            if (_result == null) return;
+
+            var plugin = Plugin.Instance;
+            if (plugin == null) return;
+
+            _webInProgress = true;
+            SetStatus("Exporting interactive web map…");
+            plugin.StartCoroutine(WebMapExport.Run(_result, (ok, msg) =>
+            {
+                _webInProgress = false;
+                if (ok)
+                {
+                    _webBundleDir = msg;
+                    if (_webBtnText != null) _webBtnText.text = "COPY DIR";
+                    SetStatus($"Web map exported — open index.html in {SanitizePathForDisplay(msg)}");
+                    Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                        "Interactive web map exported.");
+                }
+                else
+                {
+                    SetStatus(msg);
+                }
+            }));
+        }
+
+        // Second WEB MAP click: copy the exported bundle folder to the clipboard
+        // so the player can paste it into Explorer and open index.html.
+        private static void DoCopyWebDir()
+        {
+            if (string.IsNullOrEmpty(_webBundleDir)) return;
+            try
+            {
+                bool ok = Plugin.CopyTextToClipboard(_webBundleDir);
+                SetStatus(ok
+                    ? $"Folder copied to clipboard: {SanitizePathForDisplay(_webBundleDir)}"
+                    : "Copy directory failed — see log.");
+            }
+            catch (Exception ex)
+            {
+                ModLog.Error($"[NoMapDiscordAdditions] Copy web dir failed: {ex.Message}");
                 SetStatus("Copy directory failed — see log.");
             }
         }

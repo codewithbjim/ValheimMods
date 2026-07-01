@@ -139,9 +139,11 @@ namespace NoMapDiscordAdditions.MapCompile
                 // Grouped by the SAME sprite key the panel lists, so turning a
                 // row off here drops every pin drawing that icon from the
                 // composite — vanilla or mod-added alike. No-op (everything
-                // included) until the player explicitly hides a kind.
-                if (MapCompilePinFilter.IsExcluded(
-                        MapCompilePinFilter.KeyFor(sprite, pin.m_type)))
+                // included) until the player explicitly hides a kind. The key
+                // is also carried onto the PinDraw so the web-map export can
+                // group pins into filterable kinds without re-deriving it.
+                string pinKey = MapCompilePinFilter.KeyFor(sprite, pin.m_type);
+                if (MapCompilePinFilter.IsExcluded(pinKey))
                     continue;
 
                 // Size from the STABLE vanilla formula — m_pinSizeLarge ×
@@ -221,6 +223,7 @@ namespace NoMapDiscordAdditions.MapCompile
                     ScreenPxW = pxW,
                     ScreenPxH = pxH,
                     Name = displayName,
+                    Key = pinKey,
                 });
             }
             return list;

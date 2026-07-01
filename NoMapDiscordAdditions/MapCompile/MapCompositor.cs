@@ -134,6 +134,13 @@ namespace NoMapDiscordAdditions.MapCompile
             // Pin caption — stamped below the icon when non-empty (TablePinName.Clean
             // is applied at snapshot time, so the ZenMap tracking suffix is gone).
             public string Name;
+            // Pin-kind grouping key (sprite asset name, or "type:N" fallback) —
+            // the same key MapCompilePinFilter uses for the PINS panel and the
+            // exclusion set. Carried through so the web-map export can group
+            // pins into filterable kinds without re-deriving it. Null on
+            // PinDraws from paths that don't set it (only the web export reads
+            // it; the label stamp ignores it).
+            public string Key;
         }
 
         /// <summary>
