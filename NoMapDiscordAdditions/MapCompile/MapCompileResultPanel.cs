@@ -267,6 +267,10 @@ namespace NoMapDiscordAdditions.MapCompile
                 if (!t.ExcludedFromCompile) tiles.Add(t);
             var pins = MapCompilePinSnapshot.Capture(out float refScreenW);
 
+            // Water mask for the feathered water merge — main thread only;
+            // null degrades gracefully to the plain chroma-pick.
+            var waterMask = MapWaterMask.Capture();
+
             MapCompositor.CompiledMap full = null;
             Exception error = null;
 
@@ -281,7 +285,7 @@ namespace NoMapDiscordAdditions.MapCompile
                 var done = new ManualResetEventSlim(false);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    try { full = MapCompositor.ComposeNative(tiles); }
+                    try { full = MapCompositor.ComposeNative(tiles, waterMask); }
                     catch (Exception ex) { error = ex; }
                     finally { done.Set(); }
                 });

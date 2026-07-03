@@ -9,8 +9,8 @@ namespace NoMapDiscordAdditions.MapCompile
     /// <summary>
     /// Modal overlay (opened from the Idle bar's SESSIONS button) listing every
     /// saved compile session for the current world+player, one row each: name,
-    /// tile count, last-used date, plus OPEN and a hold-L-CTRL DELETE. The
-    /// footer's NEW SESSION starts an extra session in the lowest free slot.
+    /// tile count, last-used date, plus RENAME, OPEN and a hold-L-CTRL DELETE.
+    /// The footer's NEW SESSION starts an extra session in the lowest free slot.
     /// Idle-only by design — switching sessions mid-compile would race the
     /// capture/compose coroutines, so the player EXITs first. Same modal shape
     /// as MapCompileManagePanel, minus the thumbnail machinery.
@@ -20,17 +20,20 @@ namespace NoMapDiscordAdditions.MapCompile
         private const string ContainerName = "MapCompileSessionsPanel";
         private const float Pad = 12f;
 
-        private const float ListWidth = 520f;
+        // Wide enough that the text block keeps a usable span with three
+        // action buttons on the row (was 520 with two).
+        private const float ListWidth = 600f;
         private const float GridPad = 8f;
         private const float RowSpacing = 8f;
         private const float RowHeight = 56f;
         // Tall enough for ~6 rows; the rest scroll.
         private const float MaxListHeight = 400f;
 
-        // Row internals: text block left, the two actions right.
+        // Row internals: text block left, the three actions right.
         private const float RowPad = 8f;
         private const float RowInnerSpacing = 8f;
         private const float RowBtnHeight = 30f;
+        private const float RenameBtnWidth = 84f;
         private const float OpenBtnWidth = 80f;
         // Sized for the disabled "DELETE (L-CTRL)" hint label so the button
         // doesn't resize when the modifier is pressed/released.
@@ -42,7 +45,8 @@ namespace NoMapDiscordAdditions.MapCompile
 
         private static float RowWidth => ListWidth - 2f * GridPad;
         private static float TextWidth =>
-            RowWidth - 2f * RowPad - OpenBtnWidth - DeleteBtnWidth - 2f * RowInnerSpacing;
+            RowWidth - 2f * RowPad - RenameBtnWidth - OpenBtnWidth - DeleteBtnWidth
+            - 3f * RowInnerSpacing;
 
         private static GameObject _containerObj;
 
@@ -52,6 +56,7 @@ namespace NoMapDiscordAdditions.MapCompile
         {
             public string DirName;
             public string DisplayName;
+            public string CustomName; // null when the row shows the default name
             public Button DeleteBtn;
             public TextMeshProUGUI DeleteLabel;
         }
@@ -132,7 +137,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
             CreateLabel(panel.transform, "SESSIONS", 22f, ListWidth);
             var hint = CreateLabel(panel.transform,
-                "Open a session, or hold L-CTRL to delete one.", 13f, ListWidth);
+                "Open or rename a session, or hold L-CTRL to delete one.", 13f, ListWidth);
 
             float listHeight;
             if (entries.Count == 0)
@@ -298,6 +303,10 @@ namespace NoMapDiscordAdditions.MapCompile
             tmp.text = RowText(entry);
             textObj.SetActive(true);
 
+            var renameBtn = MapUI.CreateButton("Rename", rowObj.transform,
+                RenameBtnWidth, RowBtnHeight, "RENAME", out var renameLabel);
+            renameLabel.fontSize = 13f;
+
             var openBtn = MapUI.CreateButton("Open", rowObj.transform,
                 OpenBtnWidth, RowBtnHeight, "OPEN", out var openLabel);
             openLabel.fontSize = 13f;
@@ -310,11 +319,13 @@ namespace NoMapDiscordAdditions.MapCompile
             {
                 DirName = entry.DirName,
                 DisplayName = entry.DisplayName,
+                CustomName = entry.CustomName,
                 DeleteBtn = delBtn,
                 DeleteLabel = delLabel,
             };
             _rows.Add(ui);
 
+            renameBtn.onClick.AddListener(() => OnRename(ui));
             openBtn.onClick.AddListener(() => OnOpen(ui));
             delBtn.onClick.AddListener(() => OnDelete(ui));
         }
@@ -340,6 +351,41 @@ namespace NoMapDiscordAdditions.MapCompile
             Hide();
             if (MapCompileSession.Resume(row.DirName))
                 MapCompileButtons.AfterSessionOpened();
+        }
+
+        // RENAME → Valheim's own sign/portal text dialog. While it's open,
+        // Minimap.Update skips ALL map key handling (its gate checks
+        // TextInput.IsVisible()), so typing 'm'/Escape in the name can't close
+        // the map underneath — same protection vanilla pin naming gets. The
+        // receiver commits on Enter; Escape cancels without a callback.
+        private static void OnRename(RowUI row)
+        {
+            var input = TextInput.m_instance;
+            if (input == null) return;
+            input.RequestText(new RenameReceiver(row),
+                "Rename session", MapCompileSessionStore.MaxCustomNameLength);
+        }
+
+        private sealed class RenameReceiver : TextReceiver
+        {
+            private readonly string _dirName;
+            private readonly string _currentCustomName;
+
+            public RenameReceiver(RowUI row)
+            {
+                _dirName = row.DirName;
+                _currentCustomName = row.CustomName;
+            }
+
+            // Prefill with the custom name only — a default-named session
+            // starts empty, and submitting empty clears back to "Session N".
+            public string GetText() => _currentCustomName ?? "";
+
+            public void SetText(string text)
+            {
+                if (MapCompileSessionStore.RenameSession(_dirName, text))
+                    Rebuild(); // relist so the row shows the new name
+            }
         }
 
         private static void OnDelete(RowUI row)

@@ -320,12 +320,17 @@ namespace NoMapDiscordAdditions.MapCompile
                 if (recent == null || e.LastUsedMs > recent.LastUsedMs) recent = e;
 
             _btn1.gameObject.SetActive(true);
-            // With a single saved session the label matches the pre-multi-
-            // session builds; the ordinal only appears once there's a choice.
+            // With a single unnamed saved session the label matches the pre-
+            // multi-session builds; the session identity (custom name when the
+            // player set one, else the ordinal) only appears once there's a
+            // choice or a name. Names are uppercased to match the bar's button
+            // style — for the default name that reproduces the old
+            // "RESUME SESSION N" text exactly — and length-capped so a long
+            // custom name can't overflow the fixed-width button.
             _btn1Text.text = recent == null
                 ? "START COMPILE"
-                : entries.Count > 1
-                    ? $"RESUME SESSION {recent.Ordinal} ({recent.TileCount})"
+                : entries.Count > 1 || recent.CustomName != null
+                    ? $"RESUME {FitLabel(recent.DisplayName.ToUpperInvariant(), 18)} ({recent.TileCount})"
                     : $"RESUME COMPILE ({recent.TileCount})";
             _btn1Text.color = MapUI.LabelColor; // clear any leftover REMOVE-state tint
             _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(StartBtnWidth, BtnHeight);
@@ -360,6 +365,14 @@ namespace NoMapDiscordAdditions.MapCompile
             // exactly which slot the player means) — no Idle CLEAR button.
             ShowClearButton(false);
         }
+
+        // Cap a session name for a fixed-width button label. TMP would just
+        // overflow the button rect; an explicit cut with an ellipsis keeps the
+        // tile count suffix visible.
+        private static string FitLabel(string s, int max) =>
+            string.IsNullOrEmpty(s) || s.Length <= max
+                ? s
+                : s.Substring(0, max - 1).TrimEnd() + "…";
 
         /// <summary>
         /// Post-open ritual shared by the Idle START/RESUME button and the
@@ -739,6 +752,11 @@ namespace NoMapDiscordAdditions.MapCompile
             // being baked into each tile capture.
             var pins = MapCompilePinSnapshot.Capture(out float refScreenW);
 
+            // Water mask for the compositor's feathered water merge — MUST be
+            // snapshotted on the main thread (Unity texture read). Null is
+            // fine: the compositor then falls back to plain chroma-pick.
+            var waterMask = MapWaterMask.Capture();
+
             MapCompositor.CompiledMap result = null;
             System.Exception error = null;
             var done = new ManualResetEventSlim(false);
@@ -747,7 +765,7 @@ namespace NoMapDiscordAdditions.MapCompile
             // sessions — push it to the thread pool so the game doesn't freeze.
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                try { result = MapCompositor.Compose(tilesSnapshot, maxDim); }
+                try { result = MapCompositor.Compose(tilesSnapshot, maxDim, waterMask); }
                 catch (System.Exception ex) { error = ex; }
                 finally { done.Set(); }
             });

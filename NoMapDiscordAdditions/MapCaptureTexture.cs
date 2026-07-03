@@ -10,8 +10,11 @@ namespace NoMapDiscordAdditions
     /// own map material, then overlays the live UI pin Images on top — so we
     /// get the rich shader output (forest masks, height shading, water, fog)
     /// the player sees, without going through ScreenCapture and without the
-    /// animated cloud/wind layer (cloud-named shader properties are zeroed
-    /// for the single render pass).
+    /// animated layers that vary between captures: cloud-named shader
+    /// properties are zeroed for the single render pass, and (when Freeze
+    /// Water Waves is on) the time-scrolled _WaterTex wave pattern is
+    /// replaced by its average colour so water bakes in the same flat state
+    /// every capture.
     /// </summary>
     public static class MapCaptureTexture
     {
@@ -378,6 +381,8 @@ namespace NoMapDiscordAdditions
 
             List<ModHelpers.SavedShaderProp> savedClouds = null;
             Texture savedMainTex = null;
+            Texture savedWaterTex = null;
+            bool waterFrozen = false;
             bool hasMainTex = mat != null && mat.HasProperty("_MainTex");
 
             // Normalize time-of-day lighting so tiles captured at any hour
@@ -389,6 +394,26 @@ namespace NoMapDiscordAdditions
 
             if (ModHelpers.EffectiveConfig.HideClouds && mat != null)
                 savedClouds = ModHelpers.SuppressShaderPropsContaining(mat, "cloud");
+
+            // Freeze the water animation for this render pass. Custom/mapshader
+            // exposes NO scalar wave props (verified via the shader dump) — the
+            // wave pattern is _WaterTex scrolled by the built-in _Time, which
+            // script can't pin. But a scrolled sample of a CONSTANT texture is
+            // time-independent, so swapping in a 1x1 texture holding _WaterTex's
+            // average colour makes water render flat and identical in every
+            // capture — no wave-phase seams between compile tiles captured at
+            // different times.
+            if ((Plugin.FreezeCaptureWaterWaves?.Value ?? true)
+                && mat != null && mat.HasProperty("_WaterTex"))
+            {
+                Texture2D flat = GetFlatWaterTexture(mat);
+                if (flat != null)
+                {
+                    savedWaterTex = mat.GetTexture("_WaterTex");
+                    mat.SetTexture("_WaterTex", flat);
+                    waterFrozen = true;
+                }
+            }
             if (hasMainTex)
             {
                 savedMainTex = mat.GetTexture("_MainTex");
@@ -430,6 +455,7 @@ namespace NoMapDiscordAdditions
                 if (hasMainTex && savedMainTex != null)
                     mat.SetTexture("_MainTex", savedMainTex);
                 if (savedClouds != null) ModHelpers.RestoreShaderProps(mat, savedClouds);
+                if (waterFrozen) mat.SetTexture("_WaterTex", savedWaterTex);
                 ModHelpers.RestoreLighting(savedLighting);
             }
         }
@@ -442,6 +468,50 @@ namespace NoMapDiscordAdditions
         private static void DrawStyledBase(RenderTexture target, Texture2D styled)
         {
             Graphics.Blit(styled, target);
+        }
+
+        // ── Flat water texture (capture-time wave freeze) ───────────────────
+        // 1x1 texture holding the average colour of the map material's live
+        // _WaterTex. Built lazily on first use (one 256x256 read per session)
+        // and cached against the source texture instance so a reload that
+        // swaps the material's texture rebuilds it. Average instead of plain
+        // grey so frozen water keeps the same overall tone as the animated
+        // pattern it replaces — a fresh flat tile composites next to an old
+        // wavy tile with only the texture (not the brightness) differing.
+        private static Texture2D _flatWaterTex;
+        private static Texture _flatWaterSrc;
+
+        private static Texture2D GetFlatWaterTexture(Material mat)
+        {
+            Texture src = mat.GetTexture("_WaterTex");
+            if (src == null) return null;
+            if (_flatWaterTex != null && ReferenceEquals(_flatWaterSrc, src))
+                return _flatWaterTex;
+
+            var src2d = src as Texture2D;
+            Color32[] px = src2d != null ? ReadPixelsSafe(src2d) : null;
+            if (px == null || px.Length == 0) return null;
+
+            long r = 0, g = 0, b = 0, a = 0;
+            for (int i = 0; i < px.Length; i++)
+            {
+                r += px[i].r; g += px[i].g; b += px[i].b; a += px[i].a;
+            }
+            int n = px.Length;
+            var avg = new Color32((byte)(r / n), (byte)(g / n), (byte)(b / n), (byte)(a / n));
+
+            if (_flatWaterTex == null)
+            {
+                _flatWaterTex = new Texture2D(1, 1, TextureFormat.RGBA32, false)
+                {
+                    name = "NMDA_flat_water",
+                    hideFlags = HideFlags.HideAndDontSave,
+                };
+            }
+            _flatWaterTex.SetPixels32(new[] { avg });
+            _flatWaterTex.Apply(false, false);
+            _flatWaterSrc = src;
+            return _flatWaterTex;
         }
 
         private static Color32[] ReadRTPixels(RenderTexture rt)

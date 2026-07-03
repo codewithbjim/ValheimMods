@@ -39,6 +39,11 @@ namespace NoMapDiscordAdditions.MapCompile
         private static readonly List<MapCompileTile> _tiles = new List<MapCompileTile>();
         private static string _sessionKey;
         private static string _sessionDir;
+        // Player-chosen session name (SESSIONS panel RENAME) — cosmetic only,
+        // never used in paths. Null = default "Session N". Loaded with the
+        // index and re-written by every SaveIndex so mid-session saves don't
+        // wipe a name given while the session sat on disk.
+        private static string _customName;
 
         // Re-adds within this radius of an existing tile's table position
         // replace the existing tile in place. 8m comfortably covers the same
@@ -89,9 +94,14 @@ namespace NoMapDiscordAdditions.MapCompile
         public static string ActiveDirName =>
             string.IsNullOrEmpty(_sessionDir) ? null : Path.GetFileName(_sessionDir);
 
-        /// <summary>"Session N" for the loaded session, null while Idle.</summary>
+        /// <summary>
+        /// Display name of the loaded session — the player's custom name when
+        /// one is set, else "Session N". Null while Idle.
+        /// </summary>
         public static string ActiveDisplayName =>
-            MapCompileSessionStore.DisplayNameFor(ActiveDirName);
+            !string.IsNullOrEmpty(_customName) && !string.IsNullOrEmpty(_sessionDir)
+                ? _customName
+                : MapCompileSessionStore.DisplayNameFor(ActiveDirName);
 
         /// <summary>
         /// Web-map folder suffix for the loaded session — "" for the legacy
@@ -119,6 +129,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _sessionKey = dirName ?? MapCompileSessionStore.NextNewDirName();
             _sessionDir = MapCompileEnvironment.GetSessionDir(_sessionKey);
+            _customName = null; // fresh session starts with the default name
             MapCompileEnvironment.EnsureDirectory(_sessionDir);
 
             _tiles.Clear();
@@ -445,6 +456,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _tiles.Clear();
             _sessionKey = null;
             _sessionDir = null;
+            _customName = null;
             CurrentState = State.Idle;
             StateChanged?.Invoke();
             Player.m_localPlayer?.Message(
@@ -467,6 +479,7 @@ namespace NoMapDiscordAdditions.MapCompile
             }
             _sessionKey = null;
             _sessionDir = null;
+            _customName = null;
             CurrentState = State.Idle;
             StateChanged?.Invoke();
         }
@@ -501,6 +514,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _sessionKey = null;
             _sessionDir = null;
+            _customName = null;
             CurrentState = State.Idle;
             StateChanged?.Invoke();
 
@@ -579,6 +593,11 @@ namespace NoMapDiscordAdditions.MapCompile
             // button targets the largest. 0/absent in indexes written before
             // multi-session; readers fall back to the file's mtime.
             public long LastOpenedMs;
+            // Player-chosen display name (SESSIONS panel RENAME). Cosmetic
+            // only — the directory/slot key never changes. NullValueHandling
+            // .Ignore keeps it out of the JSON when unset, so sessions written
+            // by older builds (and unnamed ones) round-trip unchanged.
+            public string CustomName;
             public List<TileDto> Tiles = new List<TileDto>();
             // Sprite-keys the player hid in the PINS panel. NullValueHandling
             // .Ignore keeps this out of the JSON when nothing is excluded, so
@@ -631,6 +650,7 @@ namespace NoMapDiscordAdditions.MapCompile
             {
                 SessionKey = _sessionKey,
                 LastOpenedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                CustomName = string.IsNullOrEmpty(_customName) ? null : _customName,
             };
             // Persist the PINS-panel selection alongside the tiles. Left null
             // (omitted from JSON) when nothing is hidden, so the common case
@@ -679,11 +699,13 @@ namespace NoMapDiscordAdditions.MapCompile
         /// authority on the JSON shape. False when missing or unparsable.
         /// </summary>
         internal static bool TryReadIndexSummary(string sessionDir,
-            out int tileCount, out int includedCount, out long lastOpenedMs)
+            out int tileCount, out int includedCount, out long lastOpenedMs,
+            out string customName)
         {
             tileCount = 0;
             includedCount = 0;
             lastOpenedMs = 0;
+            customName = null;
             try
             {
                 string sessionFile = MapCompileEnvironment.GetSessionFile(sessionDir);
@@ -693,6 +715,8 @@ namespace NoMapDiscordAdditions.MapCompile
                 if (dto == null) return false;
 
                 lastOpenedMs = dto.LastOpenedMs;
+                customName = string.IsNullOrWhiteSpace(dto.CustomName)
+                    ? null : dto.CustomName.Trim();
                 if (dto.Tiles != null)
                 {
                     tileCount = dto.Tiles.Count;
@@ -707,12 +731,57 @@ namespace NoMapDiscordAdditions.MapCompile
             }
         }
 
+        /// <summary>
+        /// Set (or clear, with null) the custom name of a session ON DISK
+        /// without loading it — the SESSIONS panel renames saved sessions
+        /// while Idle. Read-modify-write of the index through the same DTO
+        /// that owns the JSON shape, written atomically like SaveIndex. If the
+        /// target happens to be the loaded session, the in-memory name is
+        /// updated too so a later SaveIndex can't resurrect the old one.
+        /// </summary>
+        internal static bool TrySetCustomNameOnDisk(string sessionDir, string customName)
+        {
+            try
+            {
+                string sessionFile = MapCompileEnvironment.GetSessionFile(sessionDir);
+                if (!File.Exists(sessionFile)) return false;
+
+                var dto = JsonConvert.DeserializeObject<SessionIndexDto>(
+                    File.ReadAllText(sessionFile, Encoding.UTF8));
+                if (dto == null) return false;
+
+                dto.CustomName = string.IsNullOrWhiteSpace(customName)
+                    ? null : customName.Trim();
+
+                string tmpFile = sessionFile + ".tmp";
+                File.WriteAllText(tmpFile,
+                    JsonConvert.SerializeObject(dto, _jsonSettings), Encoding.UTF8);
+                if (File.Exists(sessionFile)) File.Delete(sessionFile);
+                File.Move(tmpFile, sessionFile);
+
+                if (!string.IsNullOrEmpty(_sessionDir)
+                    && string.Equals(Path.GetFileName(sessionDir), ActiveDirName, StringComparison.Ordinal))
+                    _customName = dto.CustomName;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warn($"[NoMapDiscordAdditions] Session rename failed: {ex.Message}");
+                return false;
+            }
+        }
+
         private static void LoadIndex()
         {
             string sessionFile = MapCompileEnvironment.GetSessionFile(_sessionDir);
             string text = File.ReadAllText(sessionFile, Encoding.UTF8);
             var dto = JsonConvert.DeserializeObject<SessionIndexDto>(text);
             if (dto == null) return;
+
+            // Restore the player-chosen name so the resume message / Manage
+            // panel header show it, and so the next SaveIndex keeps it.
+            _customName = string.IsNullOrWhiteSpace(dto.CustomName)
+                ? null : dto.CustomName.Trim();
 
             // Restore the PINS-panel selection (null/absent ⇒ everything
             // included). Done before the tiles so the filter is ready by the

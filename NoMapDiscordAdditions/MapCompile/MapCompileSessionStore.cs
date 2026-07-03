@@ -30,9 +30,16 @@ namespace NoMapDiscordAdditions.MapCompile
             public int TileCount;
             public int IncludedCount;
             public long LastUsedMs;  // LastOpenedMs from session.json; file mtime fallback
+            public string CustomName; // player-chosen name from session.json; null = default
 
-            public string DisplayName => $"Session {Ordinal}";
+            public string DisplayName =>
+                string.IsNullOrEmpty(CustomName) ? $"Session {Ordinal}" : CustomName;
         }
+
+        // Cap for player-chosen session names. Generous enough for a
+        // descriptive label, short enough that the SESSIONS row and the
+        // Manage panel header never need to wrap (both ellipsize anyway).
+        public const int MaxCustomNameLength = 40;
 
         /// <summary>
         /// Every saved session owned by the current world+player, sorted by
@@ -64,11 +71,13 @@ namespace NoMapDiscordAdditions.MapCompile
 
                 var entry = new Entry { DirName = dirName, Dir = dir, Ordinal = ordinal };
                 if (MapCompileSession.TryReadIndexSummary(dir,
-                        out int tiles, out int included, out long lastOpened))
+                        out int tiles, out int included, out long lastOpened,
+                        out string customName))
                 {
                     entry.TileCount = tiles;
                     entry.IncludedCount = included;
                     entry.LastUsedMs = lastOpened;
+                    entry.CustomName = customName;
                 }
                 else
                 {
@@ -152,6 +161,37 @@ namespace NoMapDiscordAdditions.MapCompile
             return ordinal >= 2
                 ? SlotInfix + ordinal.ToString(CultureInfo.InvariantCulture)
                 : "";
+        }
+
+        /// <summary>
+        /// Rename a saved session (the SESSIONS panel's per-row RENAME) —
+        /// cosmetic only, the directory/slot key never changes, so tiles,
+        /// resume behaviour and web-map bundle folders are all unaffected.
+        /// Empty/whitespace input clears the custom name back to the default
+        /// "Session N". Returns true when the index was rewritten.
+        /// </summary>
+        public static bool RenameSession(string dirName, string newName)
+        {
+            if (string.IsNullOrEmpty(dirName)) return false;
+            if (OrdinalOfDirName(dirName) < 1) return false; // not one of ours
+
+            string dir = MapCompileEnvironment.GetSessionDir(dirName);
+            return MapCompileSession.TrySetCustomNameOnDisk(dir, CleanCustomName(newName));
+        }
+
+        /// <summary>
+        /// Normalize a player-typed session name: trim, strip the TMP
+        /// rich-text brackets (row labels render with richText enabled, so a
+        /// literal &lt;color&gt; in a name would inject markup), cap the
+        /// length. Null when nothing usable remains — which RenameSession
+        /// treats as "revert to the default name".
+        /// </summary>
+        public static string CleanCustomName(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            string s = raw.Replace("<", "").Replace(">", "").Trim();
+            if (s.Length > MaxCustomNameLength) s = s.Substring(0, MaxCustomNameLength).Trim();
+            return s.Length == 0 ? null : s;
         }
 
         /// <summary>

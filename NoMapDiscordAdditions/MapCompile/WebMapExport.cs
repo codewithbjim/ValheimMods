@@ -98,6 +98,10 @@ namespace NoMapDiscordAdditions.MapCompile
 
             var pins = MapCompilePinSnapshot.Capture(out float _);
 
+            // Water mask for the feathered water merge — main thread only;
+            // null degrades gracefully to the plain chroma-pick.
+            var waterMask = MapWaterMask.Capture();
+
             // Off-thread: recompose the pin-free base at native resolution and
             // encode it. Keeping the encode in the same worker avoids a second
             // main-thread hop and matches the SAVE encoder choice.
@@ -111,7 +115,7 @@ namespace NoMapDiscordAdditions.MapCompile
             {
                 try
                 {
-                    full = MapCompositor.ComposeNative(tiles);
+                    full = MapCompositor.ComposeNative(tiles, waterMask);
                     if (full != null && full.Bgra != null)
                         baseBytes = MapCompositor.EncodeBgra(
                             full.Bgra, full.Width, full.Height, encodeOpts);

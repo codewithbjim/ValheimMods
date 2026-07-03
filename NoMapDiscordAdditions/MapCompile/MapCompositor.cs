@@ -25,6 +25,16 @@ namespace NoMapDiscordAdditions.MapCompile
     ///      so the higher-chroma candidate (max(R,G,B) - min(R,G,B)) wins.
     ///      Real terrain beats grey fog without any tile-ordering bias.
     ///
+    /// Water gets its own same-tier rule (when the caller supplies a
+    /// <see cref="MapWaterMask"/>): the map shader's water waves are animated,
+    /// so tiles captured at different times freeze different wave phases, and
+    /// shallow water tinted by the underwater biome is high-chroma while deep
+    /// water is grey — the chroma pick then paints hard straight-edged bands
+    /// along tile rects. On water pixels we instead cross-fade by feather
+    /// weight (distance of each candidate to its own tile's edge), so old and
+    /// new tiles' water dissolves together over a wide band instead of
+    /// butting at a rectangle. Land keeps the chroma pick unchanged.
+    ///
     /// Built on System.Drawing — already a dependency for clipboard PNG-to-DIB
     /// conversion, so no new package is required.
     /// </summary>
@@ -104,6 +114,14 @@ namespace NoMapDiscordAdditions.MapCompile
             public bool WasClamped;
         }
 
+        // Width of the water cross-fade band, in world metres, measured inward
+        // from a tile's edge. Converted to composite pixels per compose so the
+        // blend covers the same world distance in the 4096 preview and the
+        // 8192 native SAVE. 64m is wide enough that two mismatched wave
+        // patterns read as a gradient, narrow enough that genuinely different
+        // content (a partial-reveal boundary) isn't smeared far.
+        private const float WaterFeatherWorldMetres = 64f;
+
         // Hard ceiling for the native-resolution SAVE path. At 8192² a
         // 4 bytes/px buffer is ~268MB. Worst case is the label stamp, which
         // briefly holds the raw composite AND the labelled copy (~536MB) while
@@ -148,7 +166,8 @@ namespace NoMapDiscordAdditions.MapCompile
         /// world-axis maps to <paramref name="maxDimensionPx"/> pixels (clamped
         /// to a sensible floor of 512 to avoid degenerate output).
         /// </summary>
-        public static CompiledMap Compose(IReadOnlyList<MapCompileTile> tiles, int maxDimensionPx)
+        public static CompiledMap Compose(IReadOnlyList<MapCompileTile> tiles, int maxDimensionPx,
+            MapWaterMask water = null)
         {
             if (!ComputeBounds(tiles, out var worldMin, out var worldMax, out var worldSize))
                 return null;
@@ -160,7 +179,7 @@ namespace NoMapDiscordAdditions.MapCompile
             if (aspect >= 1f) { outW = maxDim; outH = Mathf.Max(1, Mathf.RoundToInt(maxDim / aspect)); }
             else              { outH = maxDim; outW = Mathf.Max(1, Mathf.RoundToInt(maxDim * aspect)); }
 
-            return Render(tiles, worldMin, worldMax, worldSize, outW, outH, wasClamped: false);
+            return Render(tiles, worldMin, worldMax, worldSize, outW, outH, wasClamped: false, water);
         }
 
         /// <summary>
@@ -172,7 +191,8 @@ namespace NoMapDiscordAdditions.MapCompile
         /// that clamp actually bit. Used by the directory SAVE so players get a
         /// zoomable, edit-quality PNG instead of the Discord-safe capped output.
         /// </summary>
-        public static CompiledMap ComposeNative(IReadOnlyList<MapCompileTile> tiles)
+        public static CompiledMap ComposeNative(IReadOnlyList<MapCompileTile> tiles,
+            MapWaterMask water = null)
         {
             if (!ComputeBounds(tiles, out var worldMin, out var worldMax, out var worldSize))
                 return null;
@@ -204,7 +224,7 @@ namespace NoMapDiscordAdditions.MapCompile
 
             int outW = (int)Math.Min(NativeMaxDim, Math.Max(512, Math.Round(nativeW)));
             int outH = (int)Math.Min(NativeMaxDim, Math.Max(512, Math.Round(nativeH)));
-            return Render(tiles, worldMin, worldMax, worldSize, outW, outH, clamped);
+            return Render(tiles, worldMin, worldMax, worldSize, outW, outH, clamped, water);
         }
 
         // Combined world bounds across every tile. Returns false (and logs) for
@@ -237,7 +257,8 @@ namespace NoMapDiscordAdditions.MapCompile
         // (MapCompileLabelStamp) so labels use Valheim's real TMP font.
         private static CompiledMap Render(IReadOnlyList<MapCompileTile> tiles,
             Vector2 worldMin, Vector2 worldMax,
-            Vector2 worldSize, int outW, int outH, bool wasClamped)
+            Vector2 worldSize, int outW, int outH, bool wasClamped,
+            MapWaterMask water = null)
         {
             // ── 3. Allocate output buffer (BGRA, 32 bits) + coverage mask ────
             // Stored in a managed byte[] so we can do per-pixel reads/writes
@@ -255,13 +276,25 @@ namespace NoMapDiscordAdditions.MapCompile
             // tile? Drives the explored-priority tier in CompositeTile so a
             // partial tile's fog can never paint over a complete tile.
             bool[] fromFull = new bool[outW * outH];
+            // Per-output-pixel feather weight (1..255) the current colour was
+            // painted with — its source pixel's distance to its own tile's
+            // edge, saturating at the feather band width. Water overlap pixels
+            // cross-fade new vs old proportionally to these weights, which is
+            // what turns wave-phase mismatch between tiles into a smooth
+            // gradient. Only allocated when a water mask was supplied.
+            byte[] edgeW = water != null ? new byte[outW * outH] : null;
+            // Feather band width in composite px — fixed in world metres so
+            // the preview and the native SAVE blend over the same terrain.
+            float featherPx = Mathf.Clamp(
+                WaterFeatherWorldMetres * (outW / worldSize.x), 4f, 256f);
             // Alpha is set on first paint; uncovered pixels stay (0,0,0,0)
             // and get explicit opaque-black treatment in the encode step.
 
             // ── 4. For each tile: resample to its dest rect, then chroma-pick ─
             foreach (var tile in tiles)
             {
-                CompositeTile(tile, outBuf, covered, fromFull, outW, outH, worldMin, worldMax);
+                CompositeTile(tile, outBuf, covered, fromFull, edgeW, outW, outH,
+                    worldMin, worldMax, water, featherPx);
             }
 
             // ── 4b. Force any still-uncovered pixels to opaque black so the
@@ -290,8 +323,9 @@ namespace NoMapDiscordAdditions.MapCompile
         /// then merge into the output buffer with chroma-based overlap resolution.
         /// </summary>
         private static void CompositeTile(MapCompileTile tile,
-            byte[] outBuf, bool[] covered, bool[] fromFull, int outW, int outH,
-            Vector2 worldMin, Vector2 worldMax)
+            byte[] outBuf, bool[] covered, bool[] fromFull, byte[] edgeW,
+            int outW, int outH, Vector2 worldMin, Vector2 worldMax,
+            MapWaterMask water, float featherPx)
         {
             bool srcFull = tile.FullyMapped;
             if (!File.Exists(tile.PngPath))
@@ -350,7 +384,47 @@ namespace NoMapDiscordAdditions.MapCompile
                 return;
             }
 
-            // ── Chroma-pick merge ───────────────────────────────────────────
+            // ── Feather weights + water-mask lookups (precomputed) ──────────
+            // Feather weight of a pixel within THIS tile: distance to the
+            // nearest edge of the tile's (unclamped) dest rect, saturating at
+            // featherPx, mapped to 1..255. Separable — min(column term, row
+            // term) — so precompute one array per axis instead of two mins +
+            // two muls per pixel. The unclamped rect matters: a tile cropped
+            // by the canvas edge keeps full weight there (no phantom feather
+            // against the canvas border where no neighbour tile exists).
+            byte[] wCol = null, wRow = null;
+            int[] maskCol = null, maskRow = null;
+            if (water != null && edgeW != null)
+            {
+                float rectX0 = xMinFrac * outW, rectX1 = xMaxFrac * outW;
+                float rectY0 = yMinFrac * outH, rectY1 = yMaxFrac * outH;
+                float invFeather = 255f / featherPx;
+
+                wCol = new byte[dstW];
+                maskCol = new int[dstW];
+                float worldW = worldMax.x - worldMin.x;
+                for (int x = 0; x < dstW; x++)
+                {
+                    float gx = dstX + x + 0.5f;
+                    float d = Mathf.Min(gx - rectX0, rectX1 - gx);
+                    wCol[x] = (byte)Mathf.Clamp(Mathf.RoundToInt(d * invFeather), 1, 255);
+                    maskCol[x] = water.CoordToIndex(worldMin.x + gx / outW * worldW);
+                }
+
+                wRow = new byte[dstH];
+                maskRow = new int[dstH];
+                float worldH = worldMax.y - worldMin.y;
+                for (int y = 0; y < dstH; y++)
+                {
+                    float gy = dstY + y + 0.5f;
+                    float d = Mathf.Min(gy - rectY0, rectY1 - gy);
+                    wRow[y] = (byte)Mathf.Clamp(Mathf.RoundToInt(d * invFeather), 1, 255);
+                    // Composite rows grow downward from worldMax.y (north-up flip).
+                    maskRow[y] = water.CoordToIndex(worldMax.y - gy / outH * worldH);
+                }
+            }
+
+            // ── Merge (chroma-pick on land, feather cross-fade on water) ────
             int outStride = outW * 4;
             int tileStride = dstW * 4;
             for (int y = 0; y < dstH; y++)
@@ -358,6 +432,8 @@ namespace NoMapDiscordAdditions.MapCompile
                 int outRow = (dstY + y) * outStride + dstX * 4;
                 int tileRow = y * tileStride;
                 int coverRow = (dstY + y) * outW + dstX;
+                int mRow = maskRow != null ? maskRow[y] : -1;
+                byte wY = wRow != null ? wRow[y] : (byte)255;
                 for (int x = 0; x < dstW; x++)
                 {
                     int oi = outRow + x * 4;
@@ -370,6 +446,13 @@ namespace NoMapDiscordAdditions.MapCompile
                     // Resampled tile alpha is essentially 255 everywhere (source PNG is RGB24);
                     // we don't read it.
 
+                    // This pixel's feather weight within the incoming tile.
+                    byte wSrc = 255;
+                    if (wCol != null)
+                    {
+                        wSrc = wCol[x] < wY ? wCol[x] : wY;
+                    }
+
                     if (!covered[ci])
                     {
                         // First write to this pixel — paint directly so we
@@ -380,6 +463,7 @@ namespace NoMapDiscordAdditions.MapCompile
                         outBuf[oi + 3] = 255;
                         covered[ci] = true;
                         fromFull[ci] = srcFull;
+                        if (edgeW != null) edgeW[ci] = wSrc;
                         continue;
                     }
 
@@ -394,12 +478,36 @@ namespace NoMapDiscordAdditions.MapCompile
                             outBuf[oi + 1] = tg;
                             outBuf[oi + 2] = tr;
                             fromFull[ci] = true;
+                            if (edgeW != null) edgeW[ci] = wSrc;
                         }
                         // else: partial src over complete dst — keep dst.
                         continue;
                     }
 
-                    // ── Tier 2: same tier (both complete / both partial) ─────
+                    // ── Tier 2a: water — feather cross-fade ──────────────────
+                    // Both candidates show the same world data except for the
+                    // animated wave phase (and shallow biome tint) baked at
+                    // capture time; a weighted blend by distance-to-own-edge
+                    // dissolves the two patterns into each other instead of
+                    // letting the chroma pick carve tile-rect-shaped bands
+                    // (shallow biome-tinted water is high-chroma, deep grey
+                    // water is low-chroma — the pick is systematic, not tie-
+                    // breaking, on water).
+                    if (mRow >= 0 && maskCol[x] >= 0 && water.Cell(mRow, maskCol[x]))
+                    {
+                        int wOld = edgeW[ci];
+                        int denom = wSrc + wOld;   // wSrc,wOld >= 1 → no div-by-0
+                        outBuf[oi]     = (byte)((tb * wSrc + outBuf[oi]     * wOld) / denom);
+                        outBuf[oi + 1] = (byte)((tg * wSrc + outBuf[oi + 1] * wOld) / denom);
+                        outBuf[oi + 2] = (byte)((tr * wSrc + outBuf[oi + 2] * wOld) / denom);
+                        // The pixel is now backed by whichever tile holds the
+                        // stronger claim — keeps a later third tile blending
+                        // against the dominant contributor.
+                        if (wSrc > wOld) edgeW[ci] = wSrc;
+                        continue;
+                    }
+
+                    // ── Tier 2b: land — chroma pick ─────────────────────────
                     byte ob = outBuf[oi];
                     byte og = outBuf[oi + 1];
                     byte or = outBuf[oi + 2];
@@ -412,6 +520,7 @@ namespace NoMapDiscordAdditions.MapCompile
                         outBuf[oi] = tb;
                         outBuf[oi + 1] = tg;
                         outBuf[oi + 2] = tr;
+                        if (edgeW != null) edgeW[ci] = wSrc;
                     }
                     // Tie or lower chroma: keep the existing pixel. We used to
                     // average on a tie ("softer seam"), but the floor/ceil

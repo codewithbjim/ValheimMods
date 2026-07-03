@@ -53,6 +53,7 @@ namespace NoMapDiscordAdditions
         public static ConfigEntry<bool> HideClouds;
         public static ConfigEntry<bool> ShowBiomeText;
         public static ConfigEntry<bool> NormalizeCaptureLighting;
+        public static ConfigEntry<bool> FreezeCaptureWaterWaves;
         public static ConfigEntry<string> CompileMessageTemplate;
         public static ConfigEntry<bool> EnableCompileMapSharing;
         public static ConfigEntry<bool> AllowCompileFromMapItems;
@@ -163,6 +164,19 @@ namespace NoMapDiscordAdditions
                 "stable look across an in-game day. Applies to every capture " +
                 "path (texture and screen, SEND/COPY and compile). Disable to " +
                 "have captures reflect the live time of day. Client-only.",
+                synced: false);
+
+            FreezeCaptureWaterWaves = Config.BindConfig(
+                "General", "Freeze Water Waves", true,
+                "If enabled, texture captures replace the map shader's " +
+                "animated water-wave texture with its average colour for the " +
+                "render pass, so water renders flat and identical in every " +
+                "capture (the shader scrolls the wave pattern with time, " +
+                "which otherwise bakes a different wave state into each MAP " +
+                "COMPILE tile and shows pattern seams at tile boundaries). " +
+                "Water depth tinting is unaffected. Applies to the texture " +
+                "capture path (SEND/COPY texture mode and compile tiles). " +
+                "Client-only.",
                 synced: false);
 
             MapStyle = Config.BindConfig(
