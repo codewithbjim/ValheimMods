@@ -149,12 +149,36 @@ namespace NoMapDiscordAdditions
 
             var corners = new Vector3[4];
             minimap.m_mapImageLarge.rectTransform.GetWorldCorners(corners);
-            int w = Mathf.RoundToInt(Mathf.Abs(corners[2].x - corners[0].x));
-            int h = Mathf.RoundToInt(Mathf.Abs(corners[2].y - corners[0].y));
-            if (w >= 64 && h >= 64)
+            float w = Mathf.Abs(corners[2].x - corners[0].x);
+            float h = Mathf.Abs(corners[2].y - corners[0].y);
+
+            // The capture rasterizes the CLAMPED uv across the whole buffer
+            // (DrawMapBase, and the styled base does the same). When the
+            // viewport pokes outside the world texture — zoomed far out, or
+            // panned to the map edge — the clamp shrinks one axis more than
+            // the other, so a screen-aspect buffer would stretch the terrain
+            // on that axis, and the pin overlay stretches with it to stay
+            // aligned (squished icons). Shrink each axis by its clamp ratio
+            // so the buffer matches the on-screen footprint of the region
+            // the PNG actually shows — the same clamped-uv-aspect rule the
+            // compile tile capture uses. Unclamped captures are unchanged.
+            Rect uv = minimap.m_mapImageLarge.uvRect;
+            float rawW = uv.xMax - uv.xMin;
+            float rawH = uv.yMax - uv.yMin;
+            float cuW = Mathf.Clamp01(uv.xMax) - Mathf.Clamp01(uv.xMin);
+            float cuH = Mathf.Clamp01(uv.yMax) - Mathf.Clamp01(uv.yMin);
+            if (rawW > 1e-6f && rawH > 1e-6f && cuW > 1e-6f && cuH > 1e-6f)
             {
-                width = w;
-                height = h;
+                w *= cuW / rawW;
+                h *= cuH / rawH;
+            }
+
+            int wi = Mathf.RoundToInt(w);
+            int hi = Mathf.RoundToInt(h);
+            if (wi >= 64 && hi >= 64)
+            {
+                width = wi;
+                height = hi;
             }
         }
 
@@ -593,6 +617,24 @@ namespace NoMapDiscordAdditions
             float hPx = corners[2].y - corners[0].y;
             if (wPx <= 0f || hPx <= 0f) return;
 
+            // The pin marker rect is square, but a pin's sprite need not be
+            // (the trader pouch is taller than wide). Stretching the sprite's
+            // atlas rect over the whole rect squishes such icons — fit the
+            // destination box to the sprite's aspect instead, centred, the
+            // exact recipe the compile stamp uses (FitSpriteAspect in
+            // MapCompileLabelStamp) and whose output matches the in-game
+            // look. Applied unconditionally: the live pin Image reports
+            // preserveAspect=false even though the icon renders with the
+            // sprite's own aspect on screen, so the flag can't be trusted.
+            // Square sprites in square rects (the common case) fall through
+            // unchanged.
+            Sprite sprite = img.sprite;
+            Rect tightRect = sprite.textureRect;
+            if (tightRect.width <= 0f || tightRect.height <= 0f) return;
+            float spriteAspect = tightRect.width / tightRect.height;
+            if (spriteAspect > wPx / hPx) hPx = wPx / spriteAspect;
+            else                          wPx = hPx * spriteAspect;
+
             // Map the icon's on-screen centre into output px through the
             // raw→clamped uv remap (identity when unclamped) so it lines up
             // with the clamped-uv terrain instead of being stretched/shifted.
@@ -612,12 +654,10 @@ namespace NoMapDiscordAdditions
                 return;
 
             // Read sprite sub-rect from its atlas.
-            Sprite sprite = img.sprite;
-            Rect rect = sprite.textureRect;
-            int srcX = Mathf.RoundToInt(rect.x);
-            int srcY = Mathf.RoundToInt(rect.y);
-            int srcW = Mathf.RoundToInt(rect.width);
-            int srcH = Mathf.RoundToInt(rect.height);
+            int srcX = Mathf.RoundToInt(tightRect.x);
+            int srcY = Mathf.RoundToInt(tightRect.y);
+            int srcW = Mathf.RoundToInt(tightRect.width);
+            int srcH = Mathf.RoundToInt(tightRect.height);
             if (srcW <= 0 || srcH <= 0) return;
 
             Color32[] atlasPixels = GetCachedAtlasPixels(sprite.texture);

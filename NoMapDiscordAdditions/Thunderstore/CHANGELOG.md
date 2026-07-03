@@ -25,6 +25,8 @@ Water used to show hard straight-edged seams where compile tiles met: the map sh
 
 ### Fixes
 
+- SEND / COPY captures no longer distort non-square pin icons — the trader pouch used to come out squished to a square; it now keeps the sprite's own shape, matching the live map and the compiled composite
+- SEND / COPY captures taken with the view poking past the edge of the map texture (far zoom-out, or panned against the edge) no longer stretch the terrain and pins on one axis — the capture is sized to the region it actually shows
 - A failed session resume (unreadable index) no longer leaves a stale internal session pointer behind
 
 ## 1.3.0

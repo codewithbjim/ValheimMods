@@ -4,3 +4,4 @@
 - Existing sessions carry over unchanged as Session 1 (no migration)
 - Idle CLEAR moved into the SESSIONS panel as per-row DELETE (L-CTRL gated)
 - Fixed hard water seams between compile tiles: captures freeze the animated wave pattern (new Freeze Water Waves setting, on by default) and the compositor cross-fades overlapping water instead of hard-picking
+- Fixed SEND/COPY captures distorting non-square pin icons (e.g. the trader pouch) and stretching the image when the view poked past the map edge
