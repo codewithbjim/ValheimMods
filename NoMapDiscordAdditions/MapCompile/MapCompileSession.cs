@@ -8,9 +8,11 @@ using UnityEngine;
 namespace NoMapDiscordAdditions.MapCompile
 {
     /// <summary>
-    /// Per-player, per-world compile session. At most one is active at a time
-    /// for the local player. Persists to disk after every tile add so a crash
-    /// or disconnect mid-mapping doesn't lose progress.
+    /// Per-player, per-world compile session. At most one is loaded at a time
+    /// for the local player, but any number can be saved on disk side by side
+    /// (see <see cref="MapCompileSessionStore"/> — the SESSIONS panel switches
+    /// between them). Persists to disk after every tile add so a crash or
+    /// disconnect mid-mapping doesn't lose progress.
     /// </summary>
     public static class MapCompileSession
     {
@@ -78,25 +80,35 @@ namespace NoMapDiscordAdditions.MapCompile
         public static bool ActiveTableAlreadyAdded =>
             CanAddTile && FindTileNearTable(ActiveTablePos.Value) >= 0;
 
-        // ─── Resume detection ────────────────────────────────────────────────
+        // ─── Loaded-session identity ─────────────────────────────────────────
 
         /// <summary>
-        /// True if a saved session for the current world+player exists on disk and
-        /// we're currently Idle. UI uses this to show "RESUME" instead of "START".
+        /// Directory name (= session key) of the loaded session — "&lt;base&gt;"
+        /// or "&lt;base&gt;_sN". Null while nothing is loaded (Idle).
         /// </summary>
-        public static bool HasResumableSession()
-        {
-            if (CurrentState != State.Idle) return false;
-            if (!MapCompileEnvironment.HasSessionKey()) return false;
+        public static string ActiveDirName =>
+            string.IsNullOrEmpty(_sessionDir) ? null : Path.GetFileName(_sessionDir);
 
-            string key = MapCompileEnvironment.GetSessionKey();
-            string dir = MapCompileEnvironment.GetSessionDir(key);
-            return File.Exists(MapCompileEnvironment.GetSessionFile(dir));
-        }
+        /// <summary>"Session N" for the loaded session, null while Idle.</summary>
+        public static string ActiveDisplayName =>
+            MapCompileSessionStore.DisplayNameFor(ActiveDirName);
+
+        /// <summary>
+        /// Web-map folder suffix for the loaded session — "" for the legacy
+        /// Session 1 so existing bundles keep updating in place, "_sN" beyond.
+        /// </summary>
+        public static string ActiveWebMapSuffix =>
+            MapCompileSessionStore.WebMapSuffixFor(ActiveDirName);
 
         // ─── Lifecycle ───────────────────────────────────────────────────────
 
-        public static void Start()
+        /// <summary>
+        /// Begin a brand-new session. <paramref name="dirName"/> pins the slot
+        /// (SESSIONS panel NEW SESSION passes the store's pick); null resolves
+        /// the lowest free slot itself — which, with nothing on disk, is the
+        /// same base dir the single-session builds used.
+        /// </summary>
+        public static void Start(string dirName = null)
         {
             if (CurrentState != State.Idle) return;
             if (!MapCompileEnvironment.HasSessionKey())
@@ -105,7 +117,7 @@ namespace NoMapDiscordAdditions.MapCompile
                 return;
             }
 
-            _sessionKey = MapCompileEnvironment.GetSessionKey();
+            _sessionKey = dirName ?? MapCompileSessionStore.NextNewDirName();
             _sessionDir = MapCompileEnvironment.GetSessionDir(_sessionKey);
             MapCompileEnvironment.EnsureDirectory(_sessionDir);
 
@@ -116,18 +128,33 @@ namespace NoMapDiscordAdditions.MapCompile
             SaveIndex();
             StateChanged?.Invoke();
 
-            Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "Map compile started.");
+            string name = ActiveDisplayName;
+            Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                name != null ? $"Map compile started — {name}." : "Map compile started.");
         }
 
-        public static bool Resume()
+        /// <summary>
+        /// Load a saved session from disk. <paramref name="dirName"/> picks the
+        /// slot (SESSIONS panel OPEN); null resumes the most recently used one
+        /// (the Idle RESUME button).
+        /// </summary>
+        public static bool Resume(string dirName = null)
         {
             if (CurrentState != State.Idle) return false;
             if (!MapCompileEnvironment.HasSessionKey()) return false;
 
-            _sessionKey = MapCompileEnvironment.GetSessionKey();
+            string target = dirName ?? MapCompileSessionStore.MostRecent()?.DirName;
+            if (string.IsNullOrEmpty(target)) return false;
+
+            _sessionKey = target;
             _sessionDir = MapCompileEnvironment.GetSessionDir(_sessionKey);
             string sessionFile = MapCompileEnvironment.GetSessionFile(_sessionDir);
-            if (!File.Exists(sessionFile)) return false;
+            if (!File.Exists(sessionFile))
+            {
+                _sessionKey = null;
+                _sessionDir = null;
+                return false;
+            }
 
             _tiles.Clear();
             try
@@ -138,14 +165,22 @@ namespace NoMapDiscordAdditions.MapCompile
             {
                 ModLog.Error($"[NoMapDiscordAdditions] Failed to resume compile session: {ex.Message}");
                 _tiles.Clear();
+                _sessionKey = null;
+                _sessionDir = null;
                 return false;
             }
+
+            // Stamp LastOpenedMs so this becomes the default RESUME target (and
+            // back-fill indexes that predate the field). LoadIndex just restored
+            // the tiles and pin filter, so the rewrite is faithful.
+            SaveIndex();
 
             CurrentState = State.Compiling;
             StateChanged?.Invoke();
             string tileWord = _tiles.Count == 1 ? "tile" : "tiles";
+            string name = ActiveDisplayName ?? "compile session";
             Player.m_localPlayer?.Message(
-                MessageHud.MessageType.Center, $"Resumed compile session ({_tiles.Count} {tileWord}).");
+                MessageHud.MessageType.Center, $"Resumed {name} ({_tiles.Count} {tileWord}).");
             return true;
         }
 
@@ -437,21 +472,17 @@ namespace NoMapDiscordAdditions.MapCompile
         }
 
         /// <summary>
-        /// Wipe the compile session entirely — in-memory tiles AND the on-disk
-        /// session folder — then return to Idle. Unlike <see cref="Discard"/>
-        /// (which only knows the loaded <c>_sessionDir</c>) this also resolves
-        /// and deletes the folder for a session that is merely resumable while
-        /// Idle, so the destructive CLEAR action works in every state. Gated
-        /// behind a held L-CTRL in the UI so it can't be hit by accident.
-        /// Returns true if anything was actually removed.
+        /// Wipe the LOADED compile session entirely — in-memory tiles AND its
+        /// on-disk folder — then return to Idle. Only reachable while a session
+        /// is loaded (Compiling EXIT + L-CTRL, resume-review CLEAR); deleting a
+        /// merely-saved session while Idle is the SESSIONS panel's job (which
+        /// knows exactly which slot the player means). Gated behind a held
+        /// L-CTRL in the UI so it can't be hit by accident. Returns true if
+        /// anything was actually removed.
         /// </summary>
         public static bool ClearSession()
         {
-            // Resolve the on-disk dir even when nothing is loaded yet (Idle +
-            // resumable): _sessionDir stays null until Start/Resume.
             string dir = _sessionDir;
-            if (string.IsNullOrEmpty(dir) && MapCompileEnvironment.HasSessionKey())
-                dir = MapCompileEnvironment.GetSessionDir(MapCompileEnvironment.GetSessionKey());
 
             bool hadAnything = _tiles.Count > 0
                 || (!string.IsNullOrEmpty(dir) && Directory.Exists(dir));
@@ -543,6 +574,11 @@ namespace NoMapDiscordAdditions.MapCompile
         {
             public int Version = 1;
             public string SessionKey;
+            // Unix ms of the last Start/Resume/mutation — SaveIndex stamps it on
+            // every write. The SESSIONS panel sorts by it and the Idle RESUME
+            // button targets the largest. 0/absent in indexes written before
+            // multi-session; readers fall back to the file's mtime.
+            public long LastOpenedMs;
             public List<TileDto> Tiles = new List<TileDto>();
             // Sprite-keys the player hid in the PINS panel. NullValueHandling
             // .Ignore keeps this out of the JSON when nothing is excluded, so
@@ -591,7 +627,11 @@ namespace NoMapDiscordAdditions.MapCompile
             string sessionFile = MapCompileEnvironment.GetSessionFile(_sessionDir);
             string tmpFile = sessionFile + ".tmp";
 
-            var dto = new SessionIndexDto { SessionKey = _sessionKey };
+            var dto = new SessionIndexDto
+            {
+                SessionKey = _sessionKey,
+                LastOpenedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
             // Persist the PINS-panel selection alongside the tiles. Left null
             // (omitted from JSON) when nothing is hidden, so the common case
             // stays clean and older readers are unaffected.
@@ -628,6 +668,42 @@ namespace NoMapDiscordAdditions.MapCompile
             catch (Exception ex)
             {
                 ModLog.Error($"[NoMapDiscordAdditions] SaveIndex failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Read just the list-view facts (tile counts + last-opened stamp) from
+        /// a session dir's index WITHOUT loading it as the active session —
+        /// <see cref="MapCompileSessionStore"/> uses this to populate the
+        /// SESSIONS panel. Kept here so the private DTOs stay the single
+        /// authority on the JSON shape. False when missing or unparsable.
+        /// </summary>
+        internal static bool TryReadIndexSummary(string sessionDir,
+            out int tileCount, out int includedCount, out long lastOpenedMs)
+        {
+            tileCount = 0;
+            includedCount = 0;
+            lastOpenedMs = 0;
+            try
+            {
+                string sessionFile = MapCompileEnvironment.GetSessionFile(sessionDir);
+                if (!File.Exists(sessionFile)) return false;
+                var dto = JsonConvert.DeserializeObject<SessionIndexDto>(
+                    File.ReadAllText(sessionFile, Encoding.UTF8));
+                if (dto == null) return false;
+
+                lastOpenedMs = dto.LastOpenedMs;
+                if (dto.Tiles != null)
+                {
+                    tileCount = dto.Tiles.Count;
+                    foreach (var t in dto.Tiles)
+                        if (!t.ExcludedFromCompile) includedCount++;
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 

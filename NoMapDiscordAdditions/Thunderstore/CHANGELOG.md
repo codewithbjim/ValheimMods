@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0
+
+### Multiple compile sessions (new)
+
+- You can now keep **any number of compile sessions per world + character** — e.g. a long-running full-world map alongside a throwaway expedition map. Each session is fully independent: its own tiles, `PINS` selection, and excluded-tile set
+- New **`SESSIONS (N)`** button on the idle compile panel opens a **SESSIONS** overlay listing every saved session — name (`Session 1`, `Session 2`, …), tile count, and when it was last used — with two per-row actions:
+  - **`OPEN`** — resume that session
+  - **`DELETE`** — wipe that session (tiles + folder). Follows the panel's "L-CTRL = destructive variant" rule: greyed out and labelled `DELETE (L-CTRL)` until you hold **Left CTRL**
+- **`NEW SESSION`** starts a fresh session in the lowest free slot. Names are automatic and stable — deleting `Session 2` never renumbers `Session 3`; the next new session reuses the free number
+- The plain idle **`RESUME`** button always targets your **most recently used** session, and reads `RESUME SESSION 2 (14)` once more than one exists (with a single session it stays `RESUME COMPILE (N)`, exactly as before)
+- Session switching is idle-only — `EXIT` the current session, then `OPEN` another. While compiling, the MANAGE TILES title shows which session you're in (`MANAGE TILES — SESSION 2 (14)`), and the start/resume messages name the session
+- **Outputs follow the active session**: each session's `WEB MAP` exports to its own stable folder — `webmap_<world>/` for Session 1 (existing bundles keep their path and keep updating in place) and `webmap_<world>_s2/` etc. beyond — and shared-tile auto-import lands in whichever session is open
+- **Zero migration**: an existing pre-1.4.0 session is picked up in place as `Session 1` — same folder, same webmap path, nothing moved or rewritten (its index only gains a last-used stamp the first time you resume it)
+- The idle `CLEAR` button moved into the SESSIONS panel as the per-row `DELETE`, so deleting always shows exactly which session — and how many tiles — you're removing
+
+### Fixes
+
+- A failed session resume (unreadable index) no longer leaves a stale internal session pointer behind
+
 ## 1.3.0
 
 ### Interactive Web Map export (new)

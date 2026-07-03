@@ -1,0 +1,7 @@
+- SEND/COPY MAP to Discord or clipboard
+- MAP COMPILE: stitch cartography tables into one PNG
+- Offline interactive WEB MAP export
+- PINS filter and TILES manage panel
+- Tile sharing
+- Map styles
+- Server-synced config

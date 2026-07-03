@@ -11,7 +11,8 @@ namespace NoMapDiscordAdditions.MapCompile
     /// at top-center so it's clearly separate from the existing send/copy panel
     /// at bottom. Layout adapts to the current <see cref="MapCompileSession"/>
     /// state:
-    ///   Idle      — single button: "START COMPILE" or "RESUME COMPILE (N)"
+    ///   Idle      — "START COMPILE" or "RESUME …", plus SESSIONS (the saved-
+    ///               session picker) once anything is saved
     ///   Compiling — "ADD TILE (N)" (greyed without an active table), "COMPILE (N)", "CANCEL"
     ///   Reviewing — hidden (result panel takes over)
     /// </summary>
@@ -50,6 +51,14 @@ namespace NoMapDiscordAdditions.MapCompile
         private static TextMeshProUGUI _btnTilesText;
         // Sized for the widest label it hosts, "TILES (10, 2 off)".
         private const float TilesBtnWidth = 178f;
+
+        // SESSIONS: opens the saved-session picker (MapCompileSessionsPanel) —
+        // open/delete any saved session or start an extra one. Idle-only:
+        // switching mid-compile would race the capture/compose coroutines, so
+        // the player EXITs first.
+        private static Button _btnSessions;
+        private static TextMeshProUGUI _btnSessionsText;
+        private const float SessionsBtnWidth = 150f;
 
         private static bool _composeInProgress;
         // Styled tile captures run a Map Style pipeline off-thread (~hundreds
@@ -112,6 +121,9 @@ namespace NoMapDiscordAdditions.MapCompile
 
             _btn1 = MapUI.CreateButton("CompileBtn1", _containerObj.transform,
                 StartBtnWidth, BtnHeight, "", out _btn1Text);
+            // Right after START/RESUME, its only Idle-row companion.
+            _btnSessions = MapUI.CreateButton("CompileBtnSessions", _containerObj.transform,
+                SessionsBtnWidth, BtnHeight, "", out _btnSessionsText);
             // After ADD/UPDATE TILE, before COMPILE — see _btnPins field comment.
             _btnPins = MapUI.CreateButton("CompileBtnPins", _containerObj.transform,
                 PinsBtnWidth, BtnHeight, "", out _btnPinsText);
@@ -152,12 +164,13 @@ namespace NoMapDiscordAdditions.MapCompile
             }
             else
             {
-                // Don't strand either overlay on screen when the panel hides
+                // Don't strand any overlay on screen when the panel hides
                 // (map closed / compile mode unavailable). The PINS selection is
                 // kept in MapCompilePinFilter and the tile changes are already
                 // persisted, so tearing them down loses nothing.
                 if (MapCompilePinFilterPanel.IsVisible) MapCompilePinFilterPanel.Hide();
                 if (MapCompileManagePanel.IsVisible) MapCompileManagePanel.Hide();
+                if (MapCompileSessionsPanel.IsVisible) MapCompileSessionsPanel.Hide();
             }
             if (!visible) _autoImportedThisOpen = false;
         }
@@ -215,6 +228,7 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn5.onClick.RemoveAllListeners();
             _btnPins.onClick.RemoveAllListeners();
             _btnTiles.onClick.RemoveAllListeners();
+            _btnSessions.onClick.RemoveAllListeners();
 
             switch (MapCompileSession.CurrentState)
             {
@@ -253,6 +267,7 @@ namespace NoMapDiscordAdditions.MapCompile
             float w = 16f; // l/r padding
             int active = 0;
             if (_btn1.gameObject.activeSelf) { w += _btn1.GetComponent<RectTransform>().sizeDelta.x; active++; }
+            if (_btnSessions.gameObject.activeSelf) { w += _btnSessions.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btnPins.gameObject.activeSelf) { w += _btnPins.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btnTiles.gameObject.activeSelf) { w += _btnTiles.GetComponent<RectTransform>().sizeDelta.x; active++; }
             if (_btn2.gameObject.activeSelf) { w += _btn2.GetComponent<RectTransform>().sizeDelta.x; active++; }
@@ -293,45 +308,73 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn4.gameObject.SetActive(false);
             _btnPins.gameObject.SetActive(false);
             _btnTiles.gameObject.SetActive(false);
+            _btnSessions.gameObject.SetActive(false);
             ShowClearButton(true);
         }
 
         private static void LayoutIdle()
         {
-            bool resumable = MapCompileSession.HasResumableSession();
-            int existingCount = resumable ? CountSavedTiles() : 0;
+            var entries = MapCompileSessionStore.ListForCurrent();
+            MapCompileSessionStore.Entry recent = null;
+            foreach (var e in entries)
+                if (recent == null || e.LastUsedMs > recent.LastUsedMs) recent = e;
 
             _btn1.gameObject.SetActive(true);
-            _btn1Text.text = resumable
-                ? $"RESUME COMPILE ({existingCount})"
-                : "START COMPILE";
+            // With a single saved session the label matches the pre-multi-
+            // session builds; the ordinal only appears once there's a choice.
+            _btn1Text.text = recent == null
+                ? "START COMPILE"
+                : entries.Count > 1
+                    ? $"RESUME SESSION {recent.Ordinal} ({recent.TileCount})"
+                    : $"RESUME COMPILE ({recent.TileCount})";
             _btn1Text.color = MapUI.LabelColor; // clear any leftover REMOVE-state tint
             _btn1.GetComponent<RectTransform>().sizeDelta = new Vector2(StartBtnWidth, BtnHeight);
             _btn1.interactable = !_composeInProgress;
+            string resumeDir = recent?.DirName;
             _btn1.onClick.AddListener(() =>
             {
-                if (resumable) MapCompileSession.Resume();
+                if (resumeDir != null) MapCompileSession.Resume(resumeDir);
                 else MapCompileSession.Start();
-
-                // The player almost always clicks START/RESUME while standing
-                // at the cartography table they just opened the map from.
-                // Capture that table automatically — dedup-by-table-position
-                // in AddTile prevents an accidental duplicate when resuming.
-                if (MapCompileSession.CanAddTile)
-                    OnAddTileClicked();
-
-                // A freshly started/resumed session immediately absorbs
-                // anything already waiting in the incoming share folder.
-                TryAutoImport();
+                AfterSessionOpened();
             });
+
+            // SESSIONS: pick/create/delete saved sessions. Pointless with
+            // nothing saved yet — START COMPILE covers the first one.
+            _btnSessions.gameObject.SetActive(entries.Count > 0);
+            if (entries.Count > 0)
+            {
+                _btnSessionsText.text = $"SESSIONS ({entries.Count})";
+                _btnSessionsText.color = MapUI.LabelColor;
+                _btnSessions.GetComponent<RectTransform>().sizeDelta =
+                    new Vector2(SessionsBtnWidth, BtnHeight);
+                _btnSessions.interactable = !_composeInProgress;
+                _btnSessions.onClick.AddListener(MapCompileSessionsPanel.Toggle);
+            }
 
             _btn2.gameObject.SetActive(false);
             _btn3.gameObject.SetActive(false);
             _btn4.gameObject.SetActive(false);
             _btnPins.gameObject.SetActive(false);
             _btnTiles.gameObject.SetActive(false);
-            // Only worth offering when there's a saved session on disk to wipe.
-            ShowClearButton(resumable);
+            // Deleting saved sessions lives in the SESSIONS panel (which knows
+            // exactly which slot the player means) — no Idle CLEAR button.
+            ShowClearButton(false);
+        }
+
+        /// <summary>
+        /// Post-open ritual shared by the Idle START/RESUME button and the
+        /// SESSIONS panel's OPEN / NEW SESSION actions. The player almost
+        /// always opens a session while standing at the cartography table they
+        /// just used, so capture that table automatically (dedup-by-table-
+        /// position in AddTile turns a resume's re-capture into an update, not
+        /// a duplicate), then absorb anything already waiting in the incoming
+        /// share folder. Both no-op if the open failed and we're still Idle.
+        /// </summary>
+        internal static void AfterSessionOpened()
+        {
+            if (MapCompileSession.CanAddTile)
+                OnAddTileClicked();
+            TryAutoImport();
         }
 
         private static void LayoutCompiling()
@@ -402,6 +445,8 @@ namespace NoMapDiscordAdditions.MapCompile
             _btn4.GetComponent<RectTransform>().sizeDelta = new Vector2(ExitBtnWidth, BtnHeight);
             _btn4.onClick.AddListener(OnExitClicked);
             _btn5.gameObject.SetActive(false);
+            // Session switching is Idle-only — EXIT first (see _btnSessions).
+            _btnSessions.gameObject.SetActive(false);
 
             // PINS: choose which pin kinds get stamped on the next COMPILE.
             // Only meaningful once there's at least one tile (an empty session
@@ -743,21 +788,6 @@ namespace NoMapDiscordAdditions.MapCompile
 
             MapCompileSession.Finish();
             MapCompileResultPanel.Show(result);
-        }
-
-        private static int CountSavedTiles()
-        {
-            // Light-weight: count tile_*.png files in the would-be session dir.
-            // We don't load the index here — that happens lazily on Resume() to
-            // avoid disk I/O every time the panel re-lays out.
-            try
-            {
-                string key = MapCompileEnvironment.GetSessionKey();
-                string dir = MapCompileEnvironment.GetSessionDir(key);
-                if (!System.IO.Directory.Exists(dir)) return 0;
-                return System.IO.Directory.GetFiles(dir, "tile_*.png").Length;
-            }
-            catch { return 0; }
         }
 
         private static void DestroyExisting(Transform largeRoot)

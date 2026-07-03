@@ -159,15 +159,18 @@ namespace NoMapDiscordAdditions.MapCompile
             Vector2 wmin = full.WorldMin;
             Vector2 wsize = full.WorldMax - full.WorldMin;
 
-            // Stable per-world output folder: compiled/webmap_<world>/. Re-exporting
-            // UPDATES this folder in place — same path, same bookmarkable index.html
+            // Stable per-world, per-session output folder: compiled/webmap_<world>/
+            // for Session 1 (unchanged from before multi-session, so existing
+            // bundles keep their path) and webmap_<world>_sN/ beyond. Re-exporting
+            // UPDATES the folder in place — same path, same bookmarkable index.html
             // — instead of spawning a new timestamped copy each time. Keyed by world
-            // so different worlds don't clobber each other.
+            // + session so neither worlds nor sessions clobber each other.
             string uid = ZNet.instance != null
                 ? ZNet.instance.GetWorldUID().ToString("X16") : "world";
             string worldKey = Sanitize(
                 ZNet.instance != null ? ZNet.instance.GetWorldName() : null, uid);
-            string dir = Path.Combine(MapCompileEnvironment.CompiledOutDir, "webmap_" + worldKey);
+            string dir = Path.Combine(MapCompileEnvironment.CompiledOutDir,
+                "webmap_" + worldKey + MapCompileSession.ActiveWebMapSuffix);
             string iconsDir = Path.Combine(dir, "icons");
             MapCompileEnvironment.EnsureDirectory(dir);
 

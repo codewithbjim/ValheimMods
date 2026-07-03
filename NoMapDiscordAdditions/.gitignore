@@ -1,3 +1,4 @@
 Thunderstore/plugins/*
 Thunderstore/*.zip
 .thunderstore-token
+.nexus-apikey

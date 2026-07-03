@@ -22,6 +22,7 @@ Built for no-map (and normal) servers where the map is revealed table-by-table. 
   - [Compiling: the result panel](#compiling-the-result-panel)
   - [Interactive Web Map (WEB MAP)](#interactive-web-map-web-map)
   - [Sharing tiles between players](#sharing-tiles-between-players)
+  - [Multiple sessions (SESSIONS panel)](#multiple-sessions-sessions-panel)
   - [Resuming, suspending, and clearing a session](#resuming-suspending-and-clearing-a-session)
 - [Pin captions and table names](#pin-captions-and-table-names)
 - [Map styles](#map-styles)
@@ -82,7 +83,7 @@ The bottom-right of the large map gets a `Show Biome Text` toggle, a **SEND MAP*
 
 ## MAP COMPILE
 
-The intent: walk between cartography tables, add each reading as a **tile**, and on **COMPILE** the mod composites every tile into one PNG that preserves world coordinates. A session is never lost when you save/copy/send — pause your mapping run and resume it at the next table or after a restart.
+The intent: walk between cartography tables, add each reading as a **tile**, and on **COMPILE** the mod composites every tile into one PNG that preserves world coordinates. A session is never lost when you save/copy/send — pause your mapping run and resume it at the next table or after a restart. You can also keep **several sessions per world** side by side (say, a full-world map and a separate expedition map) and switch between them from the [SESSIONS panel](#multiple-sessions-sessions-panel).
 
 ### The compile panel
 
@@ -90,7 +91,7 @@ A panel appears on the bottom-left of the large map. Its buttons change with the
 
 | State | Buttons |
 |---|---|
-| **Idle** (no active session) | `START COMPILE`, or `RESUME COMPILE (N)` + `CLEAR` when a saved session exists |
+| **Idle** (no active session) | `START COMPILE`, or `RESUME COMPILE (N)` + `SESSIONS (N)` when saved sessions exist (`RESUME SESSION 2 (N)` once there's more than one) |
 | **Compiling** (active session) | `ADD TILE (N)` / `UPDATE TILE (N)`, `TILES (N)`, `PINS`, `COMPILE (N)`, `SHARE (N)` / `EXPORT (N)`, `EXIT` |
 
 `N` is the current tile count. The `TILES` label also shows how many tiles are currently excluded (`TILES (10, 2 off)`), and `PINS` shows how many pin kinds are hidden (`PINS (3 off)`).
@@ -141,7 +142,7 @@ Unlike the at-the-table `UPDATE TILE` / `REMOVE TILE` controls, this panel can a
 
 ### Interactive Web Map (WEB MAP)
 
-**WEB MAP** (on the result panel, next to `SAVE`) exports a **self-contained, offline, interactive viewer** to `compiled/webmap_<world>/`. Double-click its **`index.html`** and it opens in any browser — **no server, no internet, and no third-party libraries**.
+**WEB MAP** (on the result panel, next to `SAVE`) exports a **self-contained, offline, interactive viewer** to `compiled/webmap_<world>/` (`webmap_<world>_s2/` etc. for [extra sessions](#multiple-sessions-sessions-panel)). Double-click its **`index.html`** and it opens in any browser — **no server, no internet, and no third-party libraries**.
 
 Where `SAVE` gives you a flat image with the pins baked in, the web map keeps the pins as a **filterable overlay**: it recomposes a **pin-free base image** at native resolution (the same path `SAVE` uses) and ships the pins as data plus one small PNG per distinct pin icon/tint, so the overlay lands pixel-for-pixel where the baked pins would have. Pin tints match the live map (ZenMap's boss-orange / private-peach hues carry over).
 
@@ -152,7 +153,7 @@ In the viewer you can:
 - **Search the pin list** to jump to any named pin, and **click a pin** to open its details.
 - Toggle **labels** (`L`), a **coordinate grid** (`G`), pin **clustering**, and a **measure** tool.
 
-[Excluded tiles](#managing-captured-tiles-tiles-panel) and pins outside a captured tile are left out, so the web map mirrors the compiled preview exactly. Re-exporting **updates the same per-world folder in place** — a stable, bookmarkable `index.html` — instead of piling up timestamped copies, and clears out stale icons / old base images. After the export the button morphs to **COPY DIR** so a second click puts the bundle folder on your clipboard. The base image honours [`Output.Output Format`](#output-format).
+[Excluded tiles](#managing-captured-tiles-tiles-panel) and pins outside a captured tile are left out, so the web map mirrors the compiled preview exactly. Re-exporting **updates the same per-world, per-session folder in place** — a stable, bookmarkable `index.html` — instead of piling up timestamped copies, and clears out stale icons / old base images. After the export the button morphs to **COPY DIR** so a second click puts the bundle folder on your clipboard. The base image honours [`Output.Output Format`](#output-format).
 
 ### Sharing tiles between players
 
@@ -165,12 +166,22 @@ In a no-map world each player only reveals the area around the tables they visit
 
 > A Discord webhook is send-only, so import is folder-based rather than read back from Discord.
 
+### Multiple sessions (SESSIONS panel)
+
+You can keep any number of independent compile sessions per world + character — e.g. one long-running full-world map alongside a throwaway expedition map — each with its own tiles, PINS selection, and excluded-tile set.
+
+- **SESSIONS (N)** (idle, next to `START`/`RESUME`) opens the panel: one row per saved session showing its name (`Session 1`, `Session 2`, …), tile count, and when it was last used.
+- **OPEN** resumes that session. **NEW SESSION** starts a fresh one in the lowest free slot. The plain idle `RESUME` button always targets whichever session you used most recently.
+- **DELETE** wipes a saved session (tiles and folder). Per the panel-wide rule it stays greyed out and labelled `DELETE (L-CTRL)` until you hold **Left CTRL** — a plain click can't destroy anything.
+- Switching happens from idle only: **EXIT** your current session first, then open another. While compiling, the **MANAGE TILES** title shows which session you're in (`MANAGE TILES — SESSION 2 (14)`).
+- Names are automatic and stable — deleting `Session 2` doesn't renumber `Session 3`; the next `NEW SESSION` reuses the free number. [Shared-tile imports](#sharing-tiles-between-players) land in whichever session is active, and each session's [WEB MAP](#interactive-web-map-web-map) exports to its own folder.
+
 ### Resuming, suspending, and clearing a session
 
-- **EXIT** (compiling) **suspends** the session — kept on disk and resumable any time. This is the safe, non-destructive way to leave compile mode.
-- **EXIT + hold Left CTRL** → red **CLEAR ALL (L-CTRL)** wipes the whole session: every in-memory tile and the on-disk session folder.
-- **RESUME COMPILE (N)** (idle) drops you straight back into a saved session with every tile intact.
-- **CLEAR** (idle, next to `RESUME COMPILE`) discards a saved session without resuming it. Like every destructive control it stays greyed out and labelled `CLEAR (L-CTRL)` until you hold **Left CTRL**.
+- **EXIT** (compiling) **suspends** the session — kept on disk and resumable any time. This is the safe, non-destructive way to leave compile mode. (Exiting a session with zero tiles quietly discards it — nothing worth resuming.)
+- **EXIT + hold Left CTRL** → red **CLEAR ALL (L-CTRL)** wipes the current session: every in-memory tile and the on-disk session folder.
+- **RESUME COMPILE (N)** (idle) drops you straight back into your most recently used session with every tile intact.
+- Deleting a saved session without resuming it happens in the [SESSIONS panel](#multiple-sessions-sessions-panel) (the idle `CLEAR` button from older versions moved there, so you always see exactly which session you're deleting).
 
 ---
 
@@ -290,8 +301,9 @@ Everything lives under `BepInEx/config/NoMapDiscordAdditions/`:
 
 | Path | Contents |
 |---|---|
-| `compile-sessions/<world>/<character>/` | Active compile session: tile PNGs + an `index.json` (tile world rects, table names, your PINS selection, and which tiles are excluded). |
-| `compiled/` | `SAVE` output and, per world, a `webmap_<world>/` folder holding the [WEB MAP](#interactive-web-map-web-map) bundle (`index.html`, `data.js`, the base image, and `icons/`). |
+| `compile-sessions/<world+character>/` | Your first compile session: tile PNGs + a `session.json` (tile world rects, table names, last-used stamp, your PINS selection, and which tiles are excluded). One folder per world + character. |
+| `compile-sessions/<world+character>_s2/`, `_s3/`, … | [Extra sessions](#multiple-sessions-sessions-panel) for the same world + character, one folder per slot, same contents. |
+| `compiled/` | `SAVE` output and, per world **and session**, a `webmap_<world>/` (Session 1) or `webmap_<world>_s2/` folder holding the [WEB MAP](#interactive-web-map-web-map) bundle (`index.html`, `data.js`, the base image, and `icons/`). |
 | `compile-share/out/<world>/` | Exported share tiles (self-describing PNGs) for manual drag-into-Discord. |
 | `compile-share/incoming/` | Drop teammates' shared tiles here; auto-imported on the next map open during a session. |
 | `compile-share/incoming/processed/` | Imported tiles are moved here. |

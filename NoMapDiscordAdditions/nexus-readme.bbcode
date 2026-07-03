@@ -1,0 +1,65 @@
+[size=5][b]NoMapDiscordAdditions[/b][/size]
+Two map workflows on Valheim's large map:
+[list=1]
+[*][b]SEND MAP / COPY MAP[/b] — capture the visible map and either post it to a Discord webhook or paste it directly into Discord, Slack, or an image editor.
+[*][b]MAP COMPILE[/b] — visit cartography tables one by one and stitch every reading into a single high-resolution PNG you can save, copy, or send to Discord.
+[/list]
+Built for no-map (and normal) servers. Message templates, output format, and tile-sharing policy can be [b]server-synced[/b] so a host enforces the same look for everyone.
+[img]https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/1.jpg[/img]
+[line]
+[size=4][b]Highlights[/b][/size]
+[list]
+[*][b]One-click sharing[/b] — SEND MAP posts to a Discord webhook; COPY MAP puts a full-resolution image on your clipboard. Hotkeys ([font=Courier New]F10[/font] / [font=Courier New]F11[/font]) shown on the buttons and rebindable.
+[*][b]MAP COMPILE[/b] — walk between cartography tables, add each as a tile, and composite them into one coordinate-accurate PNG. Sessions persist per world + character and resume after a restart.
+[*][b]Multiple sessions[/b] — keep several independent compile sessions per world (a full-world map alongside an expedition map); a [font=Courier New]SESSIONS[/font] panel opens, creates, and deletes them.
+[*][b]Interactive WEB MAP[/b] — export a self-contained, offline web viewer (double-click [font=Courier New]index.html[/font], no server or internet needed) with drag-pan, zoom, a searchable pin list, and per-kind pin filtering over a pin-free base image.
+[*][b]Manage Tiles[/b] — a [font=Courier New]TILES[/font] panel to review every captured tile and exclude any from the next compile without deleting it (or remove it outright), including imported tiles from tables you're nowhere near.
+[*][b]PINS filter[/b] — choose exactly which pin kinds appear on a compiled map (mod-added pins included automatically).
+[*][b]Tile sharing[/b] — pool map coverage with teammates by exchanging self-describing PNG tiles.
+[*][b]Map styles[/b] — optional Old Map / Chart / Topographical / Satellite rendering for captures and compiled tiles.
+[*][b]Clean shots[/b] — every UI overlay is hidden; [font=Courier New]Player[/font]/[font=Courier New]Death[/font] pins are dropped by default (hold Left CTRL to keep them).
+[*][b]Output control[/b] — JPEG or indexed-PNG output, tuned to stay under Discord's attachment limit while keeping pin captions crisp.
+[/list]
+[b]Composed map (4 tables stitched):[/b]
+[img]https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/2.png[/img]
+[b]Sent to Discord:[/b]
+[img]https://raw.githubusercontent.com/codewithbjim/ValheimMods/refs/heads/main/NoMapDiscordAdditions/Thunderstore/Images/4.png[/img]
+[line]
+[size=4][b]Installation[/b][/size]
+Install with a mod manager and the dependencies come with it. To install manually, drop the DLL into [font=Courier New]BepInEx/plugins[/font] and install each dependency below.
+[list]
+[*][url=https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/]BepInExPack Valheim 5.4.2333[/url] — mod loader.
+[*][url=https://thunderstore.io/c/valheim/p/ValheimModding/JsonDotNET/]JsonDotNET 13.0.4[/url] — persists compile sessions to disk.
+[*][url=https://thunderstore.io/c/valheim/p/ValheimModding/Jotunn/]Jotunn 2.29.0[/url] — server-authoritative config sync.
+[*][url=https://thunderstore.io/c/valheim/p/ZenDragon/ZenMap/]ZenMap ≥ 1.8.0[/url] — required for MAP COMPILE; also fixes a [font=Courier New]Graphics.CopyTexture[/font] size-mismatch on expanded worlds.
+[/list]
+[quote]ZenMap already depends on Jotunn, so most setups have Jotunn already. Install on every client that wants the buttons; install on the server too to push synced settings.[/quote]
+[line]
+[size=4][b]Quick start[/b][/size]
+[list=1]
+[*]Open the large map ([font=Courier New]M[/font], or interact with a cartography table).
+[*][b]Share one view:[/b] click [b]COPY MAP[/b] ([font=Courier New]F11[/font]) and paste into Discord, or set a webhook and click [b]SEND MAP[/b] ([font=Courier New]F10[/font]).
+[*][b]Build a stitched map:[/b] click [b]START COMPILE[/b], then [b]ADD TILE[/b] at each cartography table you visit. When you've covered the ground you want, click [b]COMPILE[/b] → [b]SAVE[/b] / [b]COPY[/b] / [b]SEND TO DISCORD[/b].
+[/list]
+[line]
+[size=4][b]Full documentation[/b][/size]
+The [url=https://github.com/codewithbjim/ValheimMods/blob/main/NoMapDiscordAdditions/Thunderstore/WIKI.md][b]Wiki[/b][/url] covers everything in depth:
+[list]
+[*]Setting up a Discord webhook and message templates
+[*]The full MAP COMPILE flow — tiles, the [b]PINS[/b] include-filter, the result panel, [b]EXIT[/b] / [b]CLEAR ALL[/b], resuming and multiple sessions
+[*]Sharing tiles between players
+[*]Map styles and output formats
+[*]The complete [b]configuration reference[/b] and which settings are server-synced
+[*]On-disk file layout, troubleshooting, and FAQ
+[/list]
+[line]
+[size=4][b]Server behavior[/b][/size]
+Config sync uses [url=https://thunderstore.io/c/valheim/p/ValheimModding/Jotunn/][b]Jotunn[/b][/url]'s [font=Courier New]SynchronizationManager[/font] (a required dependency). On connect, the server pushes its value for every synced setting, the entry is locked client-side, and each client's local value is restored on disconnect. Server-synced settings include the webhook URL, message templates, cloud-hiding, and the tile-sharing toggles; output format, map style, lighting, and hotkeys stay local to each client. See the [url=https://github.com/codewithbjim/ValheimMods/blob/main/NoMapDiscordAdditions/Thunderstore/WIKI.md#server-behavior--sync]Wiki[/url] for the full list.
+[line]
+[size=4][b]Support & questions[/b][/size]
+Found a bug, have a question, or want to request a feature? Reach [b]virtualbjorn[/b] on either Valheim modding Discord:
+[list]
+[*][b]OdinPlus[/b] — [url=https://discord.gg/mbkPcvu9ax]https://discord.gg/mbkPcvu9ax[/url]
+[*][b]ValheimModding[/b] — [url=https://discord.gg/MJWtxQs]https://discord.gg/MJWtxQs[/url]
+[/list]
+Include your [font=Courier New]BepInEx/LogOutput.log[/font] when reporting an issue, or open one on the [url=https://github.com/codewithbjim/ValheimMods]GitHub repo[/url].

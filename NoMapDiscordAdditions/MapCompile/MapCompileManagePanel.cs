@@ -136,7 +136,14 @@ namespace NoMapDiscordAdditions.MapCompile
             vlg.padding = new RectOffset((int)Pad, (int)Pad, (int)Pad, (int)Pad);
 
             int n = MapCompileSession.Tiles.Count;
-            CreateLabel(panel.transform, $"MANAGE TILES ({n})", 22f, ListWidth);
+            // Surface which session these tiles belong to — with multiple saved
+            // sessions this title is the main in-compile reminder of the slot.
+            string sessionName = MapCompileSession.ActiveDisplayName;
+            CreateLabel(panel.transform,
+                sessionName != null
+                    ? $"MANAGE TILES — {sessionName.ToUpperInvariant()} ({n})"
+                    : $"MANAGE TILES ({n})",
+                22f, ListWidth);
             var hint = CreateLabel(panel.transform,
                 "Remove a tile, or exclude it from the next compile.", 13f, ListWidth);
 
