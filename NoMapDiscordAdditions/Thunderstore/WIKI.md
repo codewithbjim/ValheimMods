@@ -91,7 +91,7 @@ A panel appears on the bottom-left of the large map. Its buttons change with the
 
 | State | Buttons |
 |---|---|
-| **Idle** (no active session) | `START COMPILE`, or `RESUME COMPILE (N)` + `SESSIONS (N)` when saved sessions exist (`RESUME SESSION 2 (N)` once there's more than one) |
+| **Idle** (no active session) | `START COMPILE`, or `RESUME COMPILE (N)` + `SESSIONS (N)` when saved sessions exist (the button names the target session — `RESUME SESSION 2 (N)` or its custom name — once there's more than one or it's been renamed) |
 | **Compiling** (active session) | `ADD TILE (N)` / `UPDATE TILE (N)`, `TILES (N)`, `PINS`, `COMPILE (N)`, `SHARE (N)` / `EXPORT (N)`, `EXIT` |
 
 `N` is the current tile count. The `TILES` label also shows how many tiles are currently excluded (`TILES (10, 2 off)`), and `PINS` shows how many pin kinds are hidden (`PINS (3 off)`).
@@ -170,11 +170,12 @@ In a no-map world each player only reveals the area around the tables they visit
 
 You can keep any number of independent compile sessions per world + character — e.g. one long-running full-world map alongside a throwaway expedition map — each with its own tiles, PINS selection, and excluded-tile set.
 
-- **SESSIONS (N)** (idle, next to `START`/`RESUME`) opens the panel: one row per saved session showing its name (`Session 1`, `Session 2`, …), tile count, and when it was last used.
+- **SESSIONS (N)** (idle, next to `START`/`RESUME`) opens the panel: one row per saved session showing its name (`Session 1`, `Session 2`, …, or a custom name), tile count, and when it was last used.
 - **OPEN** resumes that session. **NEW SESSION** starts a fresh one in the lowest free slot. The plain idle `RESUME` button always targets whichever session you used most recently.
+- **RENAME** gives a session a custom name (`North coast survey`) via the vanilla text dialog. Cosmetic only — the session folder and its web-map export path never move. Submitting an empty name reverts to the default `Session N`.
 - **DELETE** wipes a saved session (tiles and folder). Per the panel-wide rule it stays greyed out and labelled `DELETE (L-CTRL)` until you hold **Left CTRL** — a plain click can't destroy anything.
 - Switching happens from idle only: **EXIT** your current session first, then open another. While compiling, the **MANAGE TILES** title shows which session you're in (`MANAGE TILES — SESSION 2 (14)`).
-- Names are automatic and stable — deleting `Session 2` doesn't renumber `Session 3`; the next `NEW SESSION` reuses the free number. [Shared-tile imports](#sharing-tiles-between-players) land in whichever session is active, and each session's [WEB MAP](#interactive-web-map-web-map) exports to its own folder.
+- Default names are automatic and stable — deleting `Session 2` doesn't renumber `Session 3`; the next `NEW SESSION` reuses the free number. [Shared-tile imports](#sharing-tiles-between-players) land in whichever session is active, and each session's [WEB MAP](#interactive-web-map-web-map) exports to its own folder.
 
 ### Resuming, suspending, and clearing a session
 
@@ -250,6 +251,7 @@ Config lives at `BepInEx/config/com.virtualbjorn.nomapdiscordadditions.cfg`. Mos
 | Key | Default | Notes |
 |---|---|---|
 | `Normalize Capture Lighting` | `true` | Render the map at fixed neutral-noon lighting so tiles captured at different times/biomes don't seam. Applies to every capture path. Client-only. |
+| `Freeze Water Waves` | `true` | Replace the map shader's animated water-wave texture with its average colour during capture, so water bakes flat and identical in every tile (the waves scroll with time, which otherwise shows pattern seams at tile boundaries). Depth tinting is unaffected. Applies to texture captures and compile tiles. Client-only. |
 | `Enable Logs` | `false` | Print this mod's info/warning messages to the BepInEx console and Player.log. Turn on to investigate a problem. |
 
 ### UI
@@ -291,7 +293,7 @@ Config sync is handled by **[Jotunn](https://thunderstore.io/c/valheim/p/Valheim
 
 **Server-synced** (a host enforces one look for everyone): `Discord.Webhook URL`, `Discord.Message Template`, `Discord.Spoiler Image Data`, `UI.Hide Clouds`, `Map Compile.Compile Message Template`, `Map Compile.Enable Map Sharing`, `Map Compile.Allow From Map Items`, and `Map Compile.Share Message Template`.
 
-**Always client-local** (personal preferences — forcing them on the party would be noisy): all `Output.*`, `Map Style.Style`, `UI.Show Biome Text`, `General.Normalize Capture Lighting`, `General.Enable Logs`, and the hotkey bindings.
+**Always client-local** (personal preferences — forcing them on the party would be noisy): all `Output.*`, `Map Style.Style`, `UI.Show Biome Text`, `General.Normalize Capture Lighting`, `General.Freeze Water Waves`, `General.Enable Logs`, and the hotkey bindings.
 
 ---
 

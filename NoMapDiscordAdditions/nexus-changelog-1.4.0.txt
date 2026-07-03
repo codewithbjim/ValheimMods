@@ -1,5 +1,6 @@
-- Multiple compile sessions per world: new SESSIONS panel to open, create, and delete saved sessions
-- Automatic stable session names; the idle RESUME button targets the most recently used session
+- Multiple compile sessions per world: new SESSIONS panel to open, create, rename, and delete saved sessions
+- Automatic stable session names plus optional custom names; the idle RESUME button targets (and names) the most recently used session
 - Per-session WEB MAP export folders; shared-tile imports land in the active session
 - Existing sessions carry over unchanged as Session 1 (no migration)
 - Idle CLEAR moved into the SESSIONS panel as per-row DELETE (L-CTRL gated)
+- Fixed hard water seams between compile tiles: captures freeze the animated wave pattern (new Freeze Water Waves setting, on by default) and the compositor cross-fades overlapping water instead of hard-picking
