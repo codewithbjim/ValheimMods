@@ -16,6 +16,20 @@ namespace CarveAndPlunder
         }
     }
 
+    // Skills.Save writes every skill in m_skillData, including custom numeric enum
+    // values. Skills.Load filters those values through IsSkillValid, however, and
+    // vanilla implements that check with Enum.IsDefined. Accept our stable custom ID
+    // so the saved level and XP accumulator reach GetSkill and are restored.
+    [HarmonyPatch(typeof(Skills), nameof(Skills.IsSkillValid))]
+    internal static class Skills_IsSkillValid_Patch
+    {
+        private static void Postfix(Skills.SkillType __0, ref bool __result)
+        {
+            if (__0 == LootingSkill.SkillType)
+                __result = true;
+        }
+    }
+
     // Registers the "Looting" display name. The skills UI localizes the name as
     // "$skill_<hash>"; without a word for that key it renders the raw token
     // ("[skill_478747128]"). SetupLanguage rebuilds the translation table on every

@@ -15,7 +15,7 @@
   -->
   <PropertyGroup>
     <ValheimDir>F:\SteamLibrary\steamapps\common\Valheim</ValheimDir>
-    <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
+    <BepInExDir>$(MSBuildProjectDirectory)\..\BepInExPack_Valheim\BepInEx</BepInExDir>
     <EpicLootDir>$(BepInExDir)\plugins\RandyKnapp-EpicLoot</EpicLootDir>
   </PropertyGroup>
 

@@ -1,0 +1,10 @@
+{
+  "name": "HackAndSap",
+  "version_number": "0.1.0",
+  "website_url": "https://github.com/codewithbjim/ValheimMods/tree/main/HackAndSap",
+  "description": "Get Hacking: chop adjacent fellable trees and logs with vanilla axe attacks, regrow old stumps, and decay abandoned timber.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2333",
+    "ValheimModding-Jotunn-2.29.1"
+  ]
+}

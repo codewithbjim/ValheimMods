@@ -17,7 +17,7 @@ namespace CarveAndPlunder
     {
         public const string PluginGUID = "com.virtualbjorn.carveandplunder";
         public const string PluginName = "CarveAndPlunder";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.1.1";
 
         public static Plugin Instance { get; private set; }
 
@@ -36,7 +36,13 @@ namespace CarveAndPlunder
             _harmony.PatchAll(typeof(Ragdoll_SpawnLoot_Patch));
             _harmony.PatchAll(typeof(Ragdoll_DestroyNow_Patch));
             _harmony.PatchAll(typeof(Skills_GetSkillDef_Patch));
+            _harmony.PatchAll(typeof(Skills_IsSkillValid_Patch));
             _harmony.PatchAll(typeof(Localization_SetupLanguage_Patch));
+
+            // SetupLanguage may have run before this plugin installed its postfix.
+            // Register immediately for the current language; the postfix keeps the
+            // word present after future language changes.
+            LootingSkill.RegisterLocalization(Localization.instance);
 
             // Host the hold-to-work progress bar (a clone of the native stamina
             // bar) on the plugin's own GameObject.

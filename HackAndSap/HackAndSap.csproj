@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>HackAndSap</AssemblyName>
+    <RootNamespace>HackAndSap</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ValheimDir>F:\SteamLibrary\steamapps\common\Valheim</ValheimDir>
+    <ValheimManagedDir>$(ValheimDir)\valheim_Data\Managed</ValheimManagedDir>
+    <ValheimPublicizedDir>$(MSBuildProjectDirectory)\..\.dependencies\publicized_assemblies</ValheimPublicizedDir>
+    <BepInExDir>$(MSBuildProjectDirectory)\..\BepInExPack_Valheim\BepInEx</BepInExDir>
+    <JotunnDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-Jotunn\Jotunn.dll</JotunnDll>
+    <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
+    <DevValheimDir>E:\ValheimMods\Valheim v0.221.12</DevValheimDir>
+    <DevScriptsDir>$(DevValheimDir)\BepInEx\scripts</DevScriptsDir>
+    <DevBetaPluginsDir>$(DevValheimDir)\BepInEx\plugins\Beta</DevBetaPluginsDir>
+    <TSPluginsDir>$(MSBuildProjectDirectory)\Thunderstore\plugins</TSPluginsDir>
+  </PropertyGroup>
+
+  <Target Name="CopyToProfilePlugins" AfterTargets="Build">
+    <MakeDir Directories="$(ProfilePluginsDir)" Condition="!Exists('$(ProfilePluginsDir)')" />
+    <ItemGroup>
+      <_DeployFiles Include="$(TargetPath)" />
+      <_DeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DeployFiles)" DestinationFolder="$(ProfilePluginsDir)" SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ProfilePluginsDir)" />
+  </Target>
+
+  <Target Name="CopyToDevValheimScripts" AfterTargets="Build">
+    <MakeDir Directories="$(DevScriptsDir)" Condition="!Exists('$(DevScriptsDir)')" />
+    <ItemGroup>
+      <_DevScriptFiles Include="$(TargetPath)" />
+      <_DevScriptFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DevScriptFiles)" DestinationFolder="$(DevScriptsDir)" SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DevScriptFiles->'%(Filename)%(Extension)', ', ') -> $(DevScriptsDir)" />
+  </Target>
+
+  <Target Name="CopyToDevBetaPlugins" AfterTargets="Build">
+    <MakeDir Directories="$(DevBetaPluginsDir)" Condition="!Exists('$(DevBetaPluginsDir)')" />
+    <ItemGroup>
+      <_DevBetaFiles Include="$(TargetPath)" />
+      <_DevBetaFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DevBetaFiles)" DestinationFolder="$(DevBetaPluginsDir)" SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="Copied @(_DevBetaFiles->'%(Filename)%(Extension)', ', ') -> $(DevBetaPluginsDir)" />
+  </Target>
+
+  <Target Name="CopyToThunderstorePlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <MakeDir Directories="$(TSPluginsDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TSPluginsDir)" SkipUnchangedFiles="false" />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="Jotunn"><HintPath>$(JotunnDll)</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx"><HintPath>$(BepInExDir)\core\BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(BepInExDir)\core\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="assembly_valheim"><HintPath>$(ValheimPublicizedDir)\assembly_valheim_publicized.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="assembly_utils"><HintPath>$(ValheimPublicizedDir)\assembly_utils_publicized.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="assembly_guiutils"><HintPath>$(ValheimPublicizedDir)\assembly_guiutils_publicized.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="netstandard"><HintPath>$(ValheimManagedDir)\netstandard.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(ValheimManagedDir)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ValheimManagedDir)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(ValheimManagedDir)\UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(ValheimManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

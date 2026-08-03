@@ -8,14 +8,15 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <ValheimDir>E:\ValheimMods\Valheim</ValheimDir>
+    <ValheimDir>F:\SteamLibrary\steamapps\common\Valheim</ValheimDir>
     <ValheimManagedDir>$(ValheimDir)\valheim_Data\Managed</ValheimManagedDir>
-    <ValheimPublicizedDir>$(ValheimManagedDir)\publicized_assemblies</ValheimPublicizedDir>
-    <BepInExDir>E:\ValheimMods\ValheimMods\BepInExPack_Valheim\BepInEx</BepInExDir>
+    <ValheimPublicizedDir>$(MSBuildProjectDirectory)\..\.dependencies\publicized_assemblies</ValheimPublicizedDir>
+    <BepInExDir>$(MSBuildProjectDirectory)\..\BepInExPack_Valheim\BepInEx</BepInExDir>
     <ProfilePluginsDir>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\scripts</ProfilePluginsDir>
-    <ValheimCopyPluginsDir>E:\ValheimMods\Valheim v0.221.12\Valheim\BepInEx\scripts</ValheimCopyPluginsDir>
+    <DevValheimDir>E:\ValheimMods\Valheim v0.221.12</DevValheimDir>
+    <DevPluginsDir>$(DevValheimDir)\BepInEx\scripts</DevPluginsDir>
     <JotunnDll>C:\Users\VirtualBjorn\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\ModdingDevelopment\BepInEx\plugins\ValheimModding-Jotunn\Jotunn.dll</JotunnDll>
-    <TSPluginsDir>E:\ValheimMods\ValheimMods\CarveAndPlunder\Thunderstore\plugins</TSPluginsDir>
+    <TSPluginsDir>$(MSBuildProjectDirectory)\Thunderstore\plugins</TSPluginsDir>
   </PropertyGroup>
 
   <!-- Debug builds deploy straight into the active r2modmanPlus dev profile so a
@@ -31,17 +32,18 @@
           SkipUnchangedFiles="false" />
     <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ProfilePluginsDir)" />
   </Target>
-
-  <Target Name="CopyToValheimCopyPlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
-    <MakeDir Directories="$(ValheimCopyPluginsDir)" Condition="!Exists('$(ValheimCopyPluginsDir)')" />
+  <!-- Deploy every build to the isolated Valheim dev installation. The F:
+       Steam installation is for normal play and must not receive development DLLs. -->
+  <Target Name="CopyToDevValheimPlugins" AfterTargets="Build">
+    <MakeDir Directories="$(DevPluginsDir)" Condition="!Exists('$(DevPluginsDir)')" />
     <ItemGroup>
-      <_DeployFiles Include="$(TargetPath)" />
-      <_DeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+      <_DevDeployFiles Include="$(TargetPath)" />
+      <_DevDeployFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
     </ItemGroup>
-    <Copy SourceFiles="@(_DeployFiles)"
-          DestinationFolder="$(ValheimCopyPluginsDir)"
+    <Copy SourceFiles="@(_DevDeployFiles)"
+          DestinationFolder="$(DevPluginsDir)"
           SkipUnchangedFiles="false" />
-    <Message Importance="high" Text="Copied @(_DeployFiles->'%(Filename)%(Extension)', ', ') -> $(ValheimCopyPluginsDir)" />
+    <Message Importance="high" Text="Copied @(_DevDeployFiles->'%(Filename)%(Extension)', ', ') -> $(DevPluginsDir)" />
   </Target>
 
   <!-- Release builds stage the DLL into the Thunderstore package folder, so the

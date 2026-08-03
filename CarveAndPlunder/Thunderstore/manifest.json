@@ -1,6 +1,6 @@
 {
   "name": "CarveAndPlunder",
-  "version_number": "0.1.0",
+  "version_number": "0.1.1",
   "website_url": "https://github.com/codewithbjim/ValheimMods",
   "description": "Corpses no longer auto-drop loot. Kneel and work the body: skin animals with Knives for a knife-quality bonus, loot humanoids with a custom Looting skill, or let it rot and lose most of the loot.",
   "dependencies": [

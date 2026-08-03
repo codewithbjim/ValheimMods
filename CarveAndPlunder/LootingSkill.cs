@@ -9,7 +9,8 @@ namespace CarveAndPlunder
     //
     // SCAFFOLD NOTE: this is a self-contained implementation against Valheim's
     // native Skills system so the project compiles and the skill works (XP
-    // accumulates, GetSkillFactor scales, it persists by enum-hash for free).
+    // accumulates and GetSkillFactor scales. SkillPatches also teaches Valheim's
+    // load-time enum validation to accept the stable custom ID so progress persists).
     // The display name is registered as a localization word (see SkillPatches),
     // the icon is a PNG embedded in the DLL, and the description is real. The
     // remaining planned path is to replace this file + SkillPatches.cs with

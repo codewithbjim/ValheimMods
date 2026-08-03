@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Fixed the custom **Looting** skill resetting after logging out. Valheim now accepts
+  the stable custom skill ID while loading a character and restores both its level and
+  accumulated XP.
+- Fixed the custom **Looting** skill appearing as `[skill_478747128]` when Valheim
+  completed its initial language setup before the mod loaded.
+
 ## 0.1.0
 
 Initial release.

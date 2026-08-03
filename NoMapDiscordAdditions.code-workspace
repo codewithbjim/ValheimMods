@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "CarveAndPlunder"
+		},
+		{
+			"path": "CartUpgrades"
 		}
 	],
 	"settings": {}

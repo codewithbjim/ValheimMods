@@ -28,13 +28,11 @@ or the loot rots away with the corpse.
 ## Integration seams (still to finish)
 
 1. **Custom skill → Smoothbrain SkillManager.** `LootingSkill.cs` currently uses a
-   self-contained native-Skills implementation so the project compiles and the skill
-   works (XP accrues, persists, scales). To get a localized name, a real icon, and
-   per-skill XP-rate config, drop **SkillManager.cs** into the project and reimplement
-   `LootingSkill` against it. All callers go through `LootingSkill.Raise()` /
-   `LootingSkill.GetFactor()`, so the swap stays isolated to `LootingSkill.cs` +
-   `SkillPatches.cs`. Until then the skill shows as a raw `$skill_<hash>` token in the
-   skills UI.
+   self-contained native-Skills implementation. XP accrues, persists, and scales, and
+   the skill has its own localized name, description, and embedded icon. A future
+   SkillManager integration would mainly add its standard per-skill XP-rate config.
+   All callers go through `LootingSkill.Raise()` / `LootingSkill.GetFactor()`, so the
+   swap stays isolated to `LootingSkill.cs` + `SkillPatches.cs`.
 
 2. **Work animation.** `CorpseWorkSession.StartWorkPose` plays the `kneel` emote.
    A crafting motion can't be layered on top — the emote and the `crafting` animator
